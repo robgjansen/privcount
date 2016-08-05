@@ -12,7 +12,7 @@ PYTHONPATH setup properly so that you can call `privcount` without providing a f
 
 Start the event server that will supply events to the data collector:
 
-    privcount inject --port 20003 --log events.txt
+    xzcat events.txt.xz | privcount inject --port 20003 --log - --simulate
 
 Start the PrivCount components:
 
