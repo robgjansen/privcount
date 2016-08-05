@@ -9,7 +9,7 @@ from base64 import b64decode
 
 from protocol import PrivCountClientProtocol, TorControlClientProtocol
 from tally_server import log_tally_server_status
-from util import SecureCounters, log_error, get_public_digest_string, load_public_key_string, encrypt
+from util import SecureCounters, TrafficModel, log_error, get_public_digest_string, load_public_key_string, encrypt
 
 import yaml
 
@@ -128,7 +128,30 @@ class DataCollector(ReconnectingClientFactory):
             logging.info('refusing to start collecting without required share keepers')
             return None
 
-        self.aggregator = Aggregator(dc_counters, config['sharekeepers'], self.config['noise_weight'], config['q'], self.config['event_source'])
+        # validate the traffic model we got from the tally server
+        traffic_model_valid = False
+        if 'traffic_model' in config:
+            traffic_model_valid = True
+            for k in ['states', 'emission_probability', 'transition_probability', 'start_probability']:
+                if k not in config['traffic_model']:
+                    traffic_model_valid = False
+        # load the traffic model object that we will use during aggregation
+        tmodel = None
+        if traffic_model_valid:
+            # build the model
+            states = config['traffic_model']['states']
+            start_p = config['traffic_model']['start_probability']
+            trans_p = config['traffic_model']['transition_probability']
+            emit_p = config['traffic_model']['emission_probability']
+            tmodel = TrafficModel(states, start_p, trans_p, emit_p)
+
+            # now add in the keys needed for counting
+            # NOTE the tally server send these, but we ignored them above
+            for label in tmodel.get_counter_labels():
+                # XXX TODO FIXME these sigmas should not be 0
+                dc_counters[label] = {'bins': [[0.0, float("inf")]], 'sigma': 0.0}
+
+        self.aggregator = Aggregator(dc_counters, tmodel, config['sharekeepers'], self.config['noise_weight'], config['q'], self.config['event_source'])
 
         defer_time = config['defer_time'] if 'defer_time' in config else 0.0
         minutes = defer_time / 60.0
@@ -247,7 +270,9 @@ class Aggregator(ReconnectingClientFactory):
     send results for tallying
     '''
 
-    def __init__(self, counters, sk_uids, noise_weight, param_q, tor_control_port):
+    def __init__(self, counters, traffic_model, sk_uids, noise_weight, param_q, tor_control_port):
+        self.traffic_model = traffic_model
+
         self.secure_counters = SecureCounters(counters, param_q)
         self.secure_counters.generate(sk_uids, noise_weight)
 
@@ -259,6 +284,7 @@ class Aggregator(ReconnectingClientFactory):
         self.last_event_time = 0
         self.num_rotations = 0
         self.circ_info = {}
+        self.strm_bytes = {}
         self.cli_ips_rotated = time()
         self.cli_ips_current = {}
         self.cli_ips_previous = {}
@@ -327,7 +353,25 @@ class Aggregator(ReconnectingClientFactory):
             if len(items) == 6:
                 self._handle_connection_event(items[0:6])
 
+        elif event_code == 'b':
+            # 'b', ChanID, CircID, StreamID, BW, Direction, Time
+            items = [v.strip() for v in line_remaining.split(' ', 6)]
+            if len(items) == 6:
+                self._handle_bytes_event(items[0:6])
+
         return True
+
+    def _handle_bytes_event(self, items):
+        if self.traffic_model == None:
+            return
+
+        chanid, circid, strmid = [int(v) for v in items[0:3]]
+        direction = items[3]
+        bw_bytes = int(items[4])
+        ts = float(items[5])
+
+        self.strm_bytes.setdefault(strmid, {}).setdefault(circid, [])
+        self.strm_bytes[strmid][circid].append([bw_bytes, direction, ts])
 
     def _handle_stream_event(self, items):
         chanid, circid, strmid, port, readbw, writebw = [int(v) for v in items[0:6]]
@@ -387,6 +431,78 @@ class Aggregator(ReconnectingClientFactory):
             self.secure_counters.increment("StreamBytesInOther", readbw)
             self.secure_counters.increment("StreamBytesRatioOther", ratio)
             self.secure_counters.increment("StreamLifeTimeOther", lifetime)
+
+        # traffic model learning
+        if self.traffic_model is not None and strmid in self.strm_bytes and circid in self.strm_bytes[strmid]:
+            byte_events = self.strm_bytes[strmid][circid]
+            observed_packet_delays = self._get_inter_packet_delays(start, byte_events)
+            likliest_states = self.traffic_model.run_viterbi(observed_packet_delays)
+
+            num_packets = len(observed_packet_delays)
+            num_states = len(likliest_states)
+            if num_states > num_packets:
+                logging.warning("viterbi gave us more states than we have packets")
+            elif num_states < num_packets:
+                logging.warning("viterbi gave us fewer states than we have packets")
+
+            # now increment the counters that we will use to update the model
+            #
+            # example observations = [('+', 20), ('+', 10), ('+',50), ('+',1000)]
+            # example viterbi result: Blabbing Blabbing Blabbing Thinking
+            # then count the following 3:
+            #   increment 1 for state/observation match:
+            #     Blabbing+, Blabbing+, Blabbing+, Thinking+
+            #   increment x where x is delay for each state/observation match:
+            #     Blabbing+: 20, Blabbing+: 10, Blabbing+: 50, Thinking+: 1000
+            #   increment 1 for each state-to-state transition
+            #     BlabbingBlabbing, BlabbingBlabbing, BlabbingThinking
+
+            for i in xrange(num_packets):
+                (dir_code, delay) = observed_packet_delays[i] # delay is in microseconds
+                state = likliest_states[i]
+
+                label = "TrafficModelTotalEmissions_{}{}".format(state, dir_code)
+                self.secure_counters.increment(label, 1, num_increments=1)
+                label = "TrafficModelTotalDelay_{}{}".format(state, dir_code)
+                self.secure_counters.increment(label, 1, num_increments=delay)
+                if (i+1) < num_states:
+                    next_state = likliest_states[i+1]
+                    label = "TrafficModelTotalTransitions_{}{}".format(state, next_state)
+                    self.secure_counters.increment(label, 1, num_increments=1)
+
+        # clear all 'packet' data for this stream
+        if strmid in self.strm_bytes:
+            self.strm_bytes[strmid].pop(circid, None)
+            if len(self.strm_bytes[strmid]) == 0:
+                self.strm_bytes.pop(strmid, None)
+
+    def _get_inter_packet_delays(self, strm_start_ts, byte_events):
+        '''
+        -take a list of (bw_bytes, direction, ts) and turn them into packet delay
+        observations of the form [('+', 20), ('+', 10), ('+',50), ('+',1000)]
+        -delays should be in microseconds
+        -used to train a traffic model
+        '''
+        packet_delays = []
+        num_events = len(byte_events)
+        for i in xrange(num_events):
+            (bw_bytes, direction, ts) = byte_events[i]
+
+            # a certain number of bytes were read from the kernel, turn these into packets
+            dir_code = '+' if direction == "outbound" else '-' # '-' for direction == "inbound"
+            # ts is unix timestamp in sec.microsec, like 12345678.123456
+            # so delay will be in microseconds
+            seconds_since_stream_start = ts - strm_start_ts
+            micros = seconds_since_stream_start * 1000000
+            delay = max(long(0), long(micros))
+
+            # create a packet delay for each packet
+            while bw_bytes > 0:
+                packet_delays.append((dir_code, delay))
+                # the first packet gets all of the delay, the others arrive at the same time
+                delay = 0
+                bw_bytes -= 1500 # MTU
+        return packet_delays
 
     def _classify_port(self, port):
         p2p_ports = [1214]

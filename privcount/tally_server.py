@@ -15,7 +15,7 @@ from twisted.internet import reactor, task, ssl
 from twisted.internet.protocol import ServerFactory
 
 from protocol import PrivCountServerProtocol
-from util import log_error, SecureCounters, generate_keypair, generate_cert
+from util import log_error, SecureCounters, TrafficModel, generate_keypair, generate_cert
 
 import yaml
 
@@ -164,6 +164,19 @@ class TallyServer(ServerFactory):
                 ts_conf['results'] = os.path.abspath(expanded_path)
                 assert os.path.exists(os.path.dirname(ts_conf['results']))
 
+            if 'traffic_model' in ts_conf:
+                expanded_path = os.path.expanduser(ts_conf['traffic_model'])
+                ts_conf['traffic_model'] = os.path.abspath(expanded_path)
+                assert os.path.exists(os.path.dirname(ts_conf['traffic_model']))
+
+                inf = open(ts_conf['traffic_model'], 'r')
+                model = json.load(inf)
+                inf.close()
+                assert 'states' in model
+                assert 'start_probability' in model
+                assert 'transition_probability' in model
+                assert 'emission_probability' in model
+
             expanded_path = os.path.expanduser(ts_conf['state'])
             ts_conf['state'] = os.path.abspath(expanded_path)
             assert os.path.exists(os.path.dirname(ts_conf['state']))
@@ -295,7 +308,19 @@ class TallyServer(ServerFactory):
         for uid in sk_uids:
             sk_public_keys[uid] = self.clients[uid]['public_key']
 
-        self.collection_phase = CollectionPhase(self.config['collect_period'], self.config['counters'], sk_uids, sk_public_keys, dc_uids, self.config['q'], clock_padding)
+        counters = self.config['counters']
+        model = None
+        if 'traffic_model' in self.config:
+            # load the model json file
+            inf = open(self.config['traffic_model'], 'r')
+            model = json.load(inf)
+            inf.close()
+
+            # add all of the counters needed to count the model states
+            for label in TrafficModel(model['states'], model['start_probability'], model['transition_probability'], model['emission_probability']).get_counter_labels():
+                counters[label] = {'bins': [[0.0, float("inf")]]}
+
+        self.collection_phase = CollectionPhase(self.config['collect_period'], counters, sk_uids, sk_public_keys, dc_uids, self.config['q'], clock_padding, model)
         self.collection_phase.start()
 
     def stop_collection_phase(self):
@@ -335,7 +360,7 @@ class TallyServer(ServerFactory):
 
 class CollectionPhase(object):
 
-    def __init__(self, period, counters_config, sk_uids, sk_public_keys, dc_uids, param_q, clock_padding):
+    def __init__(self, period, counters_config, sk_uids, sk_public_keys, dc_uids, param_q, clock_padding, traffic_model):
         # store configs
         self.period = period
         self.counters_config = counters_config
@@ -344,6 +369,7 @@ class CollectionPhase(object):
         self.dc_uids = dc_uids
         self.param_q = param_q
         self.clock_padding = clock_padding
+        self.traffic_model = traffic_model
 
         # setup some state
         self.state = 'new' # states: new -> starting_dcs -> starting_sks -> started -> stopping -> stopped
@@ -496,6 +522,8 @@ class CollectionPhase(object):
                 config['sharekeepers'][sk_uid] = b64encode(self.sk_public_keys[sk_uid])
             config['counters'] = self.counters_config
             config['defer_time'] = self.clock_padding
+            if self.traffic_model is not None:
+                config['traffic_model'] = self.traffic_model
             logging.info("sending start comand with {} counters and requesting {} shares to data collector {}".format(len(config['counters']), len(config['sharekeepers']), client_uid))
 
         elif self.state == 'starting_sks' and client_uid in self.sk_uids:

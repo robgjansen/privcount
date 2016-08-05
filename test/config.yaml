@@ -2,11 +2,13 @@
 tally_server:
     state: 'privcount.ts.state' # path to file where persistent state will be stored
     counters: './counters.bins.yaml' # path to a yaml file containing our counter bin configurations
+    # traffic model is optional - only use if we want to enable traffic model learning
+    traffic_model: 'traffic.model.json' # path to the traffic model, if we want to learn
     listen_port: 20001 # open port on which to listen for remote connections from TKSes
     sk_threshold: 1 # number of share keeper nodes required before starting
     dc_threshold: 1 # number of data collector nodes required before starting
     checkin_period: 10 # number of seconds clients should wait before checking with TS for updates
-    collect_period: 30 # (1 week = 604800 seconds) the safe time frame of stats collection for all stats
+    collect_period: 600 # (1 week = 604800 seconds) the safe time frame of stats collection for all stats
     continue: False # start another collection phase after finishing a previous
     q: 999999999959 ## 2147483647 # ((2**31)-1) 2^31 - 1 happens to be a prime
     # optional overrides:

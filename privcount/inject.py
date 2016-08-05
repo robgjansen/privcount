@@ -124,6 +124,8 @@ class PrivCountDataInjector(ServerFactory):
             return float(parts[7]), float(parts[8])
         elif parts[0] == 't' and len(parts) > 3:
             return float(parts[2]), float(parts[3])
+        elif parts[0] == 'b' and len(parts) > 6:
+            return float(parts[6]), float(parts[6])
         return 0.0, 0.0
 
     def _set_event_times(self, msg, start_time, end_time):
@@ -134,6 +136,8 @@ class PrivCountDataInjector(ServerFactory):
             parts[7], parts[8] = start_time, end_time
         elif parts[0] == 't' and len(parts) > 3:
             parts[2], parts[3] = start_time, end_time
+        elif parts[0] == 'b' and len(parts) > 6:
+            parts[6] = end_time
         return ' '.join([str(p) for p in parts])
 
 def main():

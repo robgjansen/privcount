@@ -10,10 +10,12 @@ import logging
 import socket
 import datetime
 import uuid
+import json
 
+from subprocess import Popen, PIPE
 from random import gauss, randint
 from os import urandom
-from math import sqrt
+from math import sqrt, exp, log
 from copy import deepcopy
 from base64 import b64encode, b64decode
 
@@ -23,6 +25,13 @@ from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
+
+def load_compressed_json(filename):
+    cmd = "xz --decompress --stdout {0}".format(filename)
+    xzproc = Popen(cmd.split(), stdout=PIPE)
+    obj = json.load(xzproc.stdout)
+    xzproc.wait()
+    return obj
 
 def load_private_key_string(key_string):
     return serialization.load_pem_private_key(key_string, password=None, backend=default_backend())
@@ -348,3 +357,68 @@ def prob_exit(consensus_path, my_fingerprint, fingerprint_pool=None):
     sum_of_sq = sum_of_sq_bw/(TEWBW**2)
     return prob, sum_of_sq
 """
+
+class TrafficModel(object):
+
+    def __init__(self, states, start_p, trans_p, emit_p):
+        self.states = states
+        self.start_p = start_p
+        self.trans_p = trans_p
+        self.emit_p = emit_p
+
+    def get_counter_labels(self):
+        labels = []
+        for state in self.emit_p:
+            for direction in self.emit_p[state]:
+                labels.append("TrafficModelTotalEmissions_{}{}".format(state, direction))
+                labels.append("TrafficModelTotalDelay_{}{}".format(state, direction))
+        for src_state in self.trans_p:
+            for dst_state in self.trans_p[src_state]:
+                labels.append("TrafficModelTotalTransitions_{}{}".format(src_state, dst_state))
+        return labels
+
+    def run_viterbi(self, obs):
+        V = [{}]
+        for st in self.states:
+            # updated emit_p here
+            (direction, delay) = obs[0]
+            (dp, dlam) = self.emit_p[st][direction]
+            fitprob = log(dp) + log(dlam) - (delay*dlam)
+            # replaced the following line
+            #V[0][st] = {"prob": start_p[st] * emit_p[st][obs[0]], "prev": None}
+            V[0][st] = {"prob": log(self.start_p[st]) + fitprob, "prev": None}
+        # Run Viterbi when t > 0
+        for t in range(1, len(obs)):
+            V.append({})
+            for st in self.states:
+                max_tr_prob = max(V[t-1][prev_st]["prob"]+log(self.trans_p[prev_st][st]) for prev_st in self.states)
+                for prev_st in self.states:
+                    if V[t-1][prev_st]["prob"] + log(self.trans_p[prev_st][st]) == max_tr_prob:
+                        # updated emit_p here
+                        (direction, delay) = obs[t]
+                        (dp, dlam) = self.emit_p[st][direction]
+                        fitprob = log(dp) + log(dlam) - (delay*dlam)
+                        # replaced the following line
+                        #max_prob = max_tr_prob * emit_p[st][obs[t]]
+                        max_prob = max_tr_prob + fitprob
+                        V[t][st] = {"prob": max_prob, "prev": prev_st}
+                        break
+        #for line in dptable(V):
+        #    print line
+        opt = []
+        # The highest probability
+        max_prob = max(value["prob"] for value in V[-1].values())
+        previous = None
+        # Get most probable state and its backtrack
+        for st, data in V[-1].items():
+            if data["prob"] == max_prob:
+                opt.append(st)
+                previous = st
+                break
+        # Follow the backtrack till the first observation
+        for t in range(len(V) - 2, -1, -1):
+            opt.insert(0, V[t + 1][previous]["prev"])
+            previous = V[t + 1][previous]["prev"]
+
+        #print 'The steps of states are ' + ' '.join(opt) + ' with highest probability of %s' % max_prob
+        return opt # list of highest probable states, in order
