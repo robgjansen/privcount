@@ -420,7 +420,7 @@ class TallyServer(ServerFactory):
 
             # add all of the counters needed to count the model states
             for label in TrafficModel(model['states'], model['start_probability'], model['transition_probability'], model['emission_probability']).get_counter_labels():
-                # XXX TODO FIXME I think this way of initializing these new labels is fragile, wrong, or both
+                # NOTE this does not have sigmas on purpose since it is only used for tallies
                 counters[label] = {'bins': [[0.0, float("inf")]]}
 
         # clients don't provide some context until the end of the phase

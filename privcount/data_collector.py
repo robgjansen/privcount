@@ -635,7 +635,9 @@ class Aggregator(ReconnectingClientFactory):
             self.secure_counters.increment("StreamBytesRatioOther", ratio)
             self.secure_counters.increment("StreamLifeTimeOther", lifetime)
 
-        # traffic model learning
+        # if we have a traffic model object, then we should use our observations to find the
+        # most likely path through the HMM, and then count some aggregate statistics
+        # about that path
         if self.traffic_model is not None and strmid in self.strm_bytes and circid in self.strm_bytes[strmid]:
             byte_events = self.strm_bytes[strmid][circid]
             observed_packet_delays = self._get_inter_packet_delays(start, byte_events)
@@ -654,11 +656,11 @@ class Aggregator(ReconnectingClientFactory):
             example observations = [('+', 20), ('+', 10), ('+',50), ('+',1000)]
             example viterbi result: Blabbing Blabbing Blabbing Thinking
             then count the following 3:
-              increment 1 for state/observation match:
+              - increment 1 for state/observation match:
                 Blabbing+, Blabbing+, Blabbing+, Thinking+
-              increment x where x is delay for each state/observation match:
+              - increment x where x is delay for each state/observation match:
                 Blabbing+: 20, Blabbing+: 10, Blabbing+: 50, Thinking+: 1000
-              increment 1 for each state-to-state transition
+              - increment 1 for each state-to-state transition:
                 BlabbingBlabbing, BlabbingBlabbing, BlabbingThinking
             '''
 
@@ -666,12 +668,17 @@ class Aggregator(ReconnectingClientFactory):
                 (dir_code, delay) = observed_packet_delays[i] # delay is in microseconds
                 state = likliest_states[i]
 
-                label = "TrafficModelTotalEmissions_{}_{}".format(state, dir_code)
+                self.secure_counters.increment("TrafficModelTotalEmissions", 1, num_increments=1)
+                label = "TrafficModelTotalEmissions_{}{}".format(state, dir_code)
                 self.secure_counters.increment(label, 1, num_increments=1)
-                label = "TrafficModelTotalDelay_{}_{}".format(state, dir_code)
+
+                self.secure_counters.increment("TrafficModelTotalDelay", 1, num_increments=delay)
+                label = "TrafficModelTotalDelay_{}{}".format(state, dir_code)
                 self.secure_counters.increment(label, 1, num_increments=delay)
+
                 if (i+1) < num_states:
                     next_state = likliest_states[i+1]
+                    self.secure_counters.increment("TrafficModelTotalTransitions", 1, num_increments=1)
                     label = "TrafficModelTotalTransitions_{}_{}".format(state, next_state)
                     self.secure_counters.increment(label, 1, num_increments=1)
 
@@ -683,10 +690,12 @@ class Aggregator(ReconnectingClientFactory):
 
     def _get_inter_packet_delays(self, strm_start_ts, byte_events):
         '''
-        -take a list of (bw_bytes, direction, ts) and turn them into packet delay
+        Take a list of (bw_bytes, direction, ts) and turn them into packet delay
         observations of the form [('+', 20), ('+', 10), ('+',50), ('+',1000)]
-        -delays should be in microseconds
-        -used to train a traffic model
+          - the returned delays will be in microseconds
+          - the returned list of observations is suitable to pass to
+            TrafficModel.run_viterbi() to find the most likly path (series of states)
+            through our traffic model
         '''
         packet_delays = []
         num_events = len(byte_events)

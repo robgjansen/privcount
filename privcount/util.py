@@ -777,25 +777,49 @@ def prob_exit(consensus_path, my_fingerprint, fingerprint_pool=None):
 """
 
 class TrafficModel(object):
+    '''
+    A class that represents a hidden markov model (HMM).
+    See `test/traffic.model.json` for a simple traffic model that this class can represent.
+    '''
 
     def __init__(self, states, start_p, trans_p, emit_p):
+        '''
+        Initialize the model with a set of states, probabilities for starting in each of those
+        states, probabilities for transitioning between those states, and proababilities of emitting
+        certain types of events in each of those states.
+
+        For us, the states very loosely represent if the node is transmitting or pausing.
+        The events represent if we saw an outbound or inbound packet while in each of those states.
+        '''
         self.states = states
         self.start_p = start_p
         self.trans_p = trans_p
         self.emit_p = emit_p
 
     def get_counter_labels(self):
-        labels = []
+        '''
+        Return the set of counters that should be counted for this model.
+        We should count the following, states and packet directions:
+          + the total number of emissions
+          + the total delay between packet transmission events
+          + the total transitions
+        '''
+        labels = ["TrafficModelTotalEmissions", "TrafficModelTotalDelay", "TrafficModelTotalTransitions"]
         for state in self.emit_p:
             for direction in self.emit_p[state]:
-                labels.append("TrafficModelTotalEmissions_{}_{}".format(state, direction))
-                labels.append("TrafficModelTotalDelay_{}_{}".format(state, direction))
+                labels.append("TrafficModelTotalEmissions_{}{}".format(state, direction))
+                labels.append("TrafficModelTotalDelay_{}{}".format(state, direction))
         for src_state in self.trans_p:
             for dst_state in self.trans_p[src_state]:
                 labels.append("TrafficModelTotalTransitions_{}_{}".format(src_state, dst_state))
         return labels
 
     def run_viterbi(self, obs):
+        '''
+        Given a list of packet observations of the form ('+' or '-', delay_time), e.g.:
+            [('+', 10), ('+', 20), ('+', 50), ('+', 1000)]
+        Run the viterbi dynamic programming algorithm to determine which path through the HMM has the highest probability, i.e.,, closest match to these observations.
+        '''
         V = [{}]
         for st in self.states:
             # updated emit_p here
