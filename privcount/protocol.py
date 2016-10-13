@@ -100,23 +100,33 @@ class PrivCountProtocol(LineOnlyReceiver):
         logging.debug("Connection with {}:{}:{} was lost: {}".format(peer.type, peer.host, peer.port, reason.getErrorMessage()))
 
     def handle_handshake_event(self, event_type, event_payload):
-        '''override this function in a subclass to handle the event type'''
+        '''
+        override this function in a subclass to handle the event type
+        '''
         pass
 
     def handle_status_event(self, event_type, event_payload):
-        '''override this function in a subclass to handle the event type'''
+        '''
+        override this function in a subclass to handle the event type
+        '''
         pass
 
     def handle_start_event(self, event_type, event_payload):
-        '''override this function in a subclass to handle the event type'''
+        '''
+        override this function in a subclass to handle the event type
+        '''
         pass
 
     def handle_stop_event(self, event_type, event_payload):
-        '''override this function in a subclass to handle the event type'''
+        '''
+        override this function in a subclass to handle the event type
+        '''
         pass
 
     def handle_checkin_event(self, event_type, event_payload):
-        '''override this function in a subclass to handle the event type'''
+        '''
+        override this function in a subclass to handle the event type
+        '''
         pass
 
 class PrivCountServerProtocol(PrivCountProtocol):
@@ -131,7 +141,9 @@ class PrivCountServerProtocol(PrivCountProtocol):
         self.send_handshake_event()
 
     def send_handshake_event(self):
-        # initiate the handshake with the client
+        '''
+        initiate the handshake with the client
+        '''
         self.server_cookie = round(random.random(), 6)
         self.sendLine("HANDSHAKE1 {}".format(self.server_cookie))
 
@@ -326,16 +338,109 @@ class TorControlClientProtocol(LineOnlyReceiver):
 
     def lineReceived(self, line): # overrides twisted function
         peer = self.transport.getPeer()
+        line = line.strip()
         logging.debug("Received line '{}' from {}:{}:{}".format(line, peer.type, peer.host, peer.port))
 
-        if self.state == 'authenticating' and line.strip() == "250 OK":
-            self.sendLine("SETEVENTS PRIVCOUNT")
-            self.state = 'processing'
+        if self.state == 'authenticating' and line == "250 OK":
+            # Just ask for all the info all at once
+            self.sendLine("GETCONF Nickname")
+            self.sendLine("GETCONF ORPort")
+            self.sendLine("GETCONF DirPort")
+            self.sendLine("GETINFO version")
+            self.sendLine("GETINFO address")
+            self.sendLine("GETINFO fingerprint")
+            self.state = 'discovering'
+        elif self.state == 'discovering':
+            # -- These are the continuing cases, they can continue discovering, skip_ok, or quit() --
+            # It's a relay, and it's just told us its Nickname
+            if line.startswith("250 Nickname="):
+                _, _, nickname = line.partition("Nickname=") # returns: part1, separator, part2
+                if not self.factory.set_nickname(nickname):
+                    logging.warning("Connection with {}:{}:{}: bad nickname {}".format(peer.type, peer.host, peer.port, nickname))
+            # It doesn't have a Nickname, maybe it's a client?
+            # But we'll catch that when we check the fingerprint, so just ignore this response
+            elif line == "250 Nickname":
+                logging.info("Connection with {}:{}:{}: no Nickname".format(peer.type, peer.host, peer.port))
+            # It's a relay, and it's just told us its ORPort
+            elif line.startswith("250 ORPort="):
+                _, _, orport = line.partition("ORPort=") # returns: part1, separator, part2
+                if not self.factory.set_orport(orport):
+                    logging.warning("Connection with {}:{}:{}: bad ORPort {}".format(peer.type, peer.host, peer.port, orport))
+            # It doesn't have an ORPort, maybe it's a client?
+            # But we'll catch that when we check the fingerprint, so just ignore this response
+            elif line == "250 ORPort":
+                logging.warning("Connection with {}:{}:{}: no ORPort".format(peer.type, peer.host, peer.port))
+            # It's a relay, and it's just told us its DirPort
+            elif line.startswith("250 DirPort="):
+                _, _, dirport = line.partition("DirPort=") # returns: part1, separator, part2
+                if not self.factory.set_dirport(dirport):
+                    logging.warning("Connection with {}:{}:{}: bad DirPort {}".format(peer.type, peer.host, peer.port, dirport))
+            # It doesn't have an DirPort, just ignore the response
+            elif line == "250 DirPort":
+                logging.info("Connection with {}:{}:{}: no DirPort".format(peer.type, peer.host, peer.port))
+            # It's just told us its version
+            # The control spec assumes that Tor always has a version, so there's no error case
+            elif line.startswith("250-version="):
+                _, _, version = line.partition("version=") # returns: part1, separator, part2
+                if not self.factory.set_version(version):
+                    logging.warning("Connection with {}:{}:{}: bad version {}".format(peer.type, peer.host, peer.port, version))
+                self.state = 'skip_ok'
+            # It's just told us its address
+            elif line.startswith("250-address="):
+                _, _, address = line.partition("address=") # returns: part1, separator, part2
+                if not self.factory.set_address(address):
+                    logging.warning("Connection with {}:{}:{}: bad address {}".format(peer.type, peer.host, peer.port, address))
+                self.state = 'skip_ok'
+            # We asked for its address, and it couldn't find it. That's weird.
+            elif line == "551 Address unknown":
+                logging.info("Connection with {}:{}:{}: does not know its own address".format(peer.type, peer.host, peer.port))
+            # -- These are the terminating cases, they must end in processing or quit() --
+            # It's a relay, and it's just told us its fingerprint
+            elif line.startswith("250-fingerprint="):
+                _, _, fingerprint = line.partition("fingerprint=") # returns: part1, separator, part2
+                if not self.factory.set_fingerprint(fingerprint):
+                    logging.warning("Connection with {}:{}:{}: bad fingerprint {}".format(peer.type, peer.host, peer.port, fingerprint))
+                # processing mode will skip any unrecognised lines, such as "250 OK"
+                self.state = 'processing'
+            # We asked for its fingerprint, and it said it's a client
+            elif line == "551 Not running in server mode":
+                logging.warning("Connection with {}:{}:{} failed: not a relay".format(peer.type, peer.host, peer.port))
+                self.quit()
+            # something unexpectedly bad happened
+            elif line.startswith("5"):
+                logging.warning("Connection with {}:{}:{} failed: unexpected error response: '{}'".format(peer.type, peer.host, peer.port, line))
+                self.quit()
+            # something unexpected, but ok happened
+            elif line.startswith("2"):
+                logging.info("Connection with {}:{}:{}: unexpected OK response: '{}'".format(peer.type, peer.host, peer.port, line))
+                self.state = 'processing'
+            # something unexpected happened, let's assume it's ok
+            else:
+                logging.warning("Connection with {}:{}:{} failed: unexpected response: '{}'".format(peer.type, peer.host, peer.port, line))
+                self.state = 'processing'
+
+            # we're done with discovering context, let's start processing events
+            if self.state == 'processing':
+                self.sendLine("SETEVENTS PRIVCOUNT")
+        elif self.state == 'skip_ok':
+            # just skip one OK line
+            if line == "250 OK":
+                self.state = 'discovering'
+            else:
+                logging.warning("Connection with {}:{}:{} failed: unexpected response: '{}'".format(peer.type, peer.host, peer.port, line))
+                self.quit()
         elif self.state == 'processing' and line.startswith("650 PRIVCOUNT "):
             _, _, event = line.partition(" PRIVCOUNT ") # returns: part1, separator, part2
             if event != '':
                 if not self.factory.handle_event(event):
                     self.quit()
+        # log any non-privcount responses at an appropriate level
+        elif line == "250 OK":
+            logging.debug("Connection with {}:{}:{}: ok response: '{}'".format(peer.type, peer.host, peer.port, line))
+        elif self.state == 'processing' and line.startswith("5"):
+            logging.warning("Connection with {}:{}:{}: unexpected response: '{}'".format(peer.type, peer.host, peer.port, line))
+        elif self.state == 'processing' and line.startswith("2"):
+            logging.info("Connection with {}:{}:{}: ok response: '{}'".format(peer.type, peer.host, peer.port, line))
 
     def quit(self):
         self.sendLine("QUIT")
@@ -345,10 +450,16 @@ class TorControlClientProtocol(LineOnlyReceiver):
         logging.debug("Connection with {}:{}:{} was lost: {}".format(peer.type, peer.host, peer.port, reason.getErrorMessage()))
 
 class TorControlServerProtocol(LineOnlyReceiver):
-    """
+    '''
     The server side of the Tor control protocol as exercised by PrivCount.
 
     This is useful for emulating a Tor control server for testing purposes.
+
+    Alternately, run a temporary, non-publishing relay with:
+    tor DataDirectory /tmp/tor.$$ ORPort 12345 PublishServerDescriptor 0 ControlSocket /tmp/tor.$$/control_socket
+    And use stem's tor-promt to query it:
+    ./tor-prompt -s /tmp/tor.$$/control_socket
+    (where $$ is the PID of the shell tor is running in.)
 
     Example protocol run:
     telnet localhost 9051
@@ -356,6 +467,17 @@ class TorControlServerProtocol(LineOnlyReceiver):
     Escape character is '^]'.
     AUTHENTICATE
     250 OK
+    GETINFO
+    250 OK
+    GETINFO fingerprint
+    250-fingerprint=5E54527B88A544E1A6CBF412A1DE2B208E7BF9A2
+    250 OK
+    GETINFO blah
+    552 Unrecognized key "blah"
+    GETCONF Nickname
+    250 Nickname=Unnamed
+    GETCONF foo
+    552 Unrecognized configuration key "foo"
     SETEVENTS PRIVCOUNT
     552 Unrecognized event "PRIVCOUNT"
     SETEVENTS BW
@@ -364,17 +486,23 @@ class TorControlServerProtocol(LineOnlyReceiver):
     QUIT
     250 closing connection
     Connection closed by foreign host.
-    """
+    '''
 
     def __init__(self, factory):
         self.factory = factory
         self.authenticated = False
 
-    def connectionMade(self): # overrides twisted function
+    def connectionMade(self):
+        '''
+        overrides twisted function
+        '''
         peer = self.transport.getPeer()
         logging.debug("Connection with {}:{}:{} was made".format(peer.type, peer.host, peer.port))
 
-    def lineReceived(self, line): # overrides twisted function
+    def lineReceived(self, line):
+        '''
+        overrides twisted function
+        '''
         peer = self.transport.getPeer()
         line = line.strip()
         parts = line.split(' ')
@@ -399,6 +527,43 @@ class TorControlServerProtocol(LineOnlyReceiver):
                         self.factory.stop_injecting()
                 else:
                     self.sendLine('552 Unrecognized event ""')
+            elif parts[0] == "GETINFO":
+                # the correct response to an empty GETINFO is an empty OK
+                if len(parts) == 1:
+                    self.sendLine("250 OK")
+                # GETINFO is case-sensitive, and returns multiple lines
+                # The control spec says we should say "Tor ", but tor doesn't
+                elif len(parts) == 2 and parts[1] == "version":
+                    self.sendLine("250-version=0.2.8.6 (git-4d217548e3f05569)")
+                    self.sendLine("250 OK")
+                elif len(parts) == 2 and parts[1] == "address":
+                    # TEST-NET from https://tools.ietf.org/html/rfc5737
+                    self.sendLine("250-address=192.0.2.91")
+                    self.sendLine("250 OK")
+                elif len(parts) == 2 and parts[1] == "fingerprint":
+                    self.sendLine("250-fingerprint=FACADE0000000000000000000123456789ABCDEF")
+                    self.sendLine("250 OK")
+                else:
+                    # strictly, GETINFO should process each word on the line
+                    # as a separate request for information.
+                    # But this is sufficient for our purposes, and is still
+                    # more-or-less conformant to the control spec.
+                    self.sendLine('552 Unrecognized key "{}"'.format(parts[1]))
+            elif parts[0] == "GETCONF":
+                # the correct response to an empty GETCONF is an empty OK
+                if len(parts) == 1:
+                    self.sendLine("250 OK")
+                # Unlike GETINFO, GETCONF is case-insensitive, and returns one line
+                # It also uses the canonical case of the option in its response
+                elif len(parts) == 2 and parts[1].lower() == "nickname":
+                    self.sendLine("250 Nickname=PrivCountTorRelay99")
+                elif len(parts) == 2 and parts[1].lower() == "orport":
+                    self.sendLine("250 ORPort=9001")
+                elif len(parts) == 2 and parts[1].lower() == "dirport":
+                    self.sendLine("250 DirPort=9030")
+                else:
+                    # Like GETINFO, our GETCONF does not accept multiple words
+                    self.sendLine('552 Unrecognized configuration key "{}"'.format(parts[1]))
             elif parts[0] == "QUIT":
                 self.factory.stop_injecting()
                 self.sendLine("250 closing connection")
@@ -408,6 +573,9 @@ class TorControlServerProtocol(LineOnlyReceiver):
         else:
             self.sendLine('510 Unrecognized command ""')
 
-    def connectionLost(self, reason): # overrides twisted function
+    def connectionLost(self, reason):
+        '''
+        overrides twisted function
+        '''
         peer = self.transport.getPeer()
         logging.debug("Connection with {}:{}:{} was lost: {}".format(peer.type, peer.host, peer.port, reason.getErrorMessage()))

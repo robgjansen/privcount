@@ -14,8 +14,9 @@ import json
 
 from subprocess import Popen, PIPE
 from random import gauss, randint
-from os import urandom
+from os import urandom, path
 from math import sqrt, exp, log
+from time import time, strftime, gmtime
 from copy import deepcopy
 from base64 import b64encode, b64decode
 
@@ -129,6 +130,18 @@ def get_random_free_port():
         if rc != 0: # error connecting, port is available
             return port
 
+## File Paths ##
+
+def normalise_path(path_str):
+    '''
+    Return the abolute path corresponding to path_str, with user directories
+    expanded, and the current working directory assumed for relative paths
+    '''
+    expanded_path = path.expanduser(path_str)
+    return path.abspath(expanded_path)
+
+## Logging ##
+
 def log_error():
     _, _, tb = sys.exc_info()
     #traceback.print_tb(tb) # Fixed format
@@ -136,29 +149,389 @@ def log_error():
     filename, line, func, text = tb_info[-1]
     logging.warning("An error occurred in file '%s', at line %d, in func %s, in statement '%s'", filename, line, func, text)
 
+## Logging: Time Formatting Functions ##
+## a timestamp is an absolute point in time, in seconds since unix epoch
+## a period is a relative time duration, in seconds
+## a time argument is either a period or a timestamp
+## a desc argument is a string description of the timestamp's meaning
+## All period and timestamp arguments are normalised using normalise_time()
+## before any calculations or formatting are performed
+
+def normalise_time(time):
+    '''
+    Return the normalised value of time
+    An abstraction used for consistent time rounding behaviour
+    '''
+    # we ignore microseconds
+    return int(time)
+
+def current_time():
+    '''
+    Return the normalised value of the current time
+    '''
+    return normalise_time(time())
+
+def format_period(period):
+    '''
+    Format a time period as a human-readable string
+    period is in seconds
+    Returns a string of the form:
+    1w 3d 12h 20m 32s
+    starting with the first non-zero period (seconds are always included)
+    '''
+    period = normalise_time(period)
+    period_str = ""
+    # handle negative times by prepending a minus sign
+    if period < 0:
+        period_str += "-"
+        period = -period
+    # there's no built-in way of formatting a time period like this in python.
+    # strftime is almost there, but would have issues with year-long periods.
+    # divmod gives us the desired floor division result, and the remainder,
+    # which will be floating point if normalise_time() returns floating point
+    (week,   period) = divmod(period, 7*24*60*60)
+    (day,    period) = divmod(period,   24*60*60)
+    (hour,   period) = divmod(period,      60*60)
+    (minute, period) = divmod(period,         60)
+    # if normalise_time yields floating point values (microseconds), this will
+    # produce a floating point result, which will be formatted as NN.NN
+    # if it's an integer, it will format as NN. This is the desired behaviour.
+    second           =        period % (      60)
+    # now build the formatted string starting with the first non-zero period
+    larger_period = 0
+    if week > 0:
+        period_str += "{}w ".format(week)
+        larger_period = 1
+    if day > 0 or larger_period:
+        period_str += "{}d ".format(day)
+        larger_period = 1
+    if hour > 0 or larger_period:
+        period_str += "{}h ".format(hour)
+        larger_period = 1
+    if minute > 0 or larger_period:
+        period_str += "{}m ".format(minute)
+    # seconds are always included, even if they are zero, or if there is no
+    # larger period
+    period_str += "{}s".format(second)
+    return period_str
+
+def format_datetime(timestamp):
+    '''
+    Format a timestamp as a human-readable UTC date and time string
+    timestamp is in seconds since the epoch
+    Returns a string of the form:
+    2016-07-16 17:58:00
+    '''
+    timestamp = normalise_time(timestamp)
+    return strftime("%Y-%m-%d %H:%M:%S", gmtime(timestamp))
+
+def format_epoch(timestamp):
+    '''
+    Format a timestamp as a unix epoch numeric string
+    timestamp is in seconds since the epoch
+    Returns a string of the form:
+    1468691880
+    '''
+    timestamp = normalise_time(timestamp)
+    return str(timestamp)
+
+def format_time(period, desc, timestamp):
+    '''
+    Format a period and timestamp as a human-readable string in UTC
+    period is in seconds, and timestamp is in seconds since the epoch
+    Returns a string of the form:
+    1w 3d 12h 20m 32s (desc 2016-07-16 17:58:00 1468691880)
+    '''
+    return "{} ({} {} {})".format(format_period(period),
+                                  desc,
+                                  format_datetime(timestamp),
+                                  format_epoch(timestamp))
+
+def format_interval(period, desc, begin_timestamp, end_timestamp):
+    '''
+    Format a period and two interval timestamps as a human-readable string in UTC
+    period is in seconds, and the timestamps are in seconds since the epoch
+    Returns a string of the form:
+    1w 3d 12h 20m 32s (desc 2016-07-16 17:58:00 to 2016-07-27 06:18:32,
+    1468691880 to 1469600312)
+    '''
+    return "{} ({} {} to {}, {} to {})".format(format_period(period),
+                                               desc,
+                                               format_datetime(begin_timestamp),
+                                               format_datetime(end_timestamp),
+                                               format_epoch(begin_timestamp),
+                                               format_epoch(end_timestamp))
+
+def format_elapsed_time_since(past_timestamp, desc):
+    '''
+    Format the time elapsed since a past event, and that event's time in UTC
+    past_timestamp is in seconds since the epoch
+    The elapsed time is from past_timestamp to the current time
+    past_timestamp is typically status['time'], and desc is typically 'since'
+    Returns a string of the form:
+    1w 3d 12h 20m 32s (desc 2016-07-16 17:58:00 1468691880)
+    '''
+    # Normalise before calculation to avoid truncation errors
+    past_timestamp = normalise_time(past_timestamp)
+    elapsed_period = current_time() - past_timestamp
+    return format_time(elapsed_period, desc, past_timestamp)
+
+def format_delay_time_wait(delay_period, desc):
+    '''
+    Format the time delay until a future event, and the expected event time
+    in UTC
+    delay_period is in seconds
+    The event time is the current time plus delay_period
+    delay_period is typically config['defer_time'], and desc is typically 'at'
+    Returns a string of the form:
+    1w 3d 12h 20m 32s (desc 2016-07-27 06:18:32 1469600312)
+    '''
+    # Normalise before calculation to avoid truncation errors
+    delay_period = normalise_time(delay_period)
+    future_timestamp = current_time() + delay_period
+    return format_time(delay_period, desc, future_timestamp)
+
+def format_delay_time_until(future_timestamp, desc):
+    '''
+    Format the time delay until a future event, and the expected event time
+    in UTC
+    The time delay is the difference between future_timestamp and the current
+    time
+    future_timestamp is in seconds since the epoch
+    future_timestamp is typically config['defer_time'], and desc is typically 'at'
+    returns a string of the form:
+    1w 3d 12h 20m 32s (desc 2016-07-27 06:18:32 1469600312)
+    '''
+    # Normalise before calculation to avoid truncation errors
+    future_timestamp = normalise_time(future_timestamp)
+    delay_period = future_timestamp - current_time()
+    return format_time(delay_period, desc, future_timestamp)
+
+def format_interval_time_between(begin_timestamp, desc, end_timestamp):
+    '''
+    Format the interval elapsed between two events, and the times of those
+    events in UTC
+    The timestamps are in seconds since the epoch
+    The interval is between begin_time and end_time
+    desc is typically 'from'
+    Returns a string of the form:
+    1w 3d 12h 20m 32s (desc 2016-07-16 17:58:00 to 2016-07-27 06:18:32,
+    1468691880 to 1469600312)
+    '''
+    # Normalise before calculation to avoid truncation errors
+    begin_timestamp = normalise_time(begin_timestamp)
+    end_timestamp = normalise_time(end_timestamp)
+    period = end_timestamp - begin_timestamp
+    return format_interval(period, desc, begin_timestamp, end_timestamp)
+
+def format_last_event_time_since(last_event_timestamp):
+    '''
+    Format the time elapsed since the last Tor event, and that event's time
+    in UTC
+    last_event_timestamp is in seconds since the epoch, and can be None
+    for no events
+    The elapsed time is from last_event_timestamp to the current time
+    Returns a string in one of the following forms:
+    no Tor events received
+    last Tor event was 1w 3d 12h 20m 32s (at 2016-07-16 17:58:00 1468691880)
+    '''
+    if last_event_timestamp is None:
+        return "no Tor events received"
+    else:
+        return "last Tor event was {}".format(format_elapsed_time_since(
+                                                  last_event_timestamp, 'at'))
+
+## Calculation ##
+
+def counter_modulus():
+    '''
+    The hard-coded modulus value for a blinded counter
+    Blinded counters are unsigned
+    In PrivCount, this does not have to be prime, and there is no need for it
+    to be configurable
+    All PrivCount counters should use unlimited-length Python longs, so that
+    counter_modulus can exceed 64 bits, the size of a native C long
+    '''
+    # historical q values
+    #return 2147483647L
+    #return 999999999959L
+    # modulus is limited to 2**64, because sample() only unpacks 8 bytes
+    return 2L**64L
+
+def min_blinded_counter_value():
+    '''
+    The hard-coded minimum value for a blinded counter
+    Blinded counters are unsigned
+    Always zero
+    '''
+    return 0L
+
+def max_blinded_counter_value():
+    '''
+    The hard-coded maximum value for a blinded counter
+    Blinded counters are unsigned
+    '''
+    return counter_modulus() - 1L
+
+def min_tally_counter_value():
+    '''
+    The hard-coded minimum value for a tallied counter
+    Tallied counters are signed, to allow for negative noise
+    '''
+    return adjust_count_signed((counter_modulus() + 1)//2,
+                               counter_modulus())
+
+def max_tally_counter_value():
+    '''
+    The hard-coded maximum value for a tallied counter
+    Tallied counters are signed, to allow for negative noise
+    '''
+    return adjust_count_signed((counter_modulus() + 1)//2 - 1,
+                               counter_modulus())
+
+def add_counter_limits_to_config(config):
+    '''
+    Add the hard-coded counter limits to a deep copy of the config dictionary
+    Returns the modified deep copy of the config dictionary
+    '''
+    assert config is not None
+    config = deepcopy(config)
+    # call this modulus so it sorts near the other values
+    config['modulus'] = counter_modulus()
+    config['min_blinded_counter_value'] = min_blinded_counter_value()
+    config['max_blinded_counter_value'] = max_blinded_counter_value()
+    config['min_tally_counter_value'] = min_tally_counter_value()
+    config['max_tally_counter_value'] = max_tally_counter_value()
+    return config
+
 def noise(sigma, sum_of_sq, p_exit):
+    '''
+    Sample noise from a gussian distribution
+    the distribution is over +/- sigma, scaled by the noise weight
+    calculated from the exit probability p_exit, and the overall sum_of_sq
+    bandwidth
+    returns a floating-point value between +sigma and -sigma, scaled by
+    noise_weight
+    '''
     sigma_i = p_exit * sigma / sqrt(sum_of_sq)
     random_sample = gauss(0, sigma_i)
     return random_sample
 
 def PRF(key, IV):
-    return Hash("PRF1|KEY:%s|IV:%s|" % (key, IV)).digest()
+    '''
+    Calculate pseudo-random bytes using a keyed hash based on key and IV
+    Given the same key and IV, the same pseudo-random bytes will be produced
+    key must contain at least as many bits of entropy as the hash
+    Therefore, it must be at least 32 bytes long
+    returns 32 pseudo-random bytes
+    '''
+    assert len(key) >= Hash().digest_size
+    prv = Hash("PRF1|KEY:%s|IV:%s|" % (key, IV)).digest()
+    # for security, the key input must have at least as many bytes as the hash
+    # output (we do not depend on the length or content of IV for security)
+    assert len(key) >= len(prv)
+    return prv
 
-def sample(s, q):
+SAMPLE_BYTE_MAX = 8L
+SAMPLE_BIT_MAX = SAMPLE_BYTE_MAX * 8L
+
+def sample(s, modulus):
+    '''
+    Sample a uniformly pseudo-random value from the random byte array s,
+    returning a value less than modulus
+    s must be at least 8 bytes long
+    the returned value has a maximum of 2**64 - 1, so modulus is limited to 2**64
+    returns a uniformly distributed in [0, modulus)
+    '''
+    # in order for this function to return v in {0, ... , modulus-1}, modulus-1 must be
+    # representable in SAMPLE_BIT_MAX bits or less
+    # (2**N is the first number not representable in an N-bit unsigned integer)
+    assert long(modulus-1) < 2L**SAMPLE_BIT_MAX
     ## Unbiased sampling through rejection sampling
     while True:
-        v = struct.unpack("<L", s[:4])[0]
-        if 0 <= v < q:
+        # s must have enough bytes for us to extract 8
+        assert len(s) >= SAMPLE_BYTE_MAX
+        # to get a value of modulus-1, we need this many bits
+        q_bit_count = long(modulus-1).bit_length()
+        # and this many bytes
+        q_byte_count = (q_bit_count+7)//8
+        assert q_byte_count <= SAMPLE_BYTE_MAX
+        # Pad the bytes we'll never use with zeroes, otherwise we reject
+        # a large number of values
+        # Since the extraction is little-endian, and we want to pad unused
+        # bytes, the zero bytes go in the larger indexes
+        s_bytes = s[:q_byte_count] + ('\0' * (SAMPLE_BYTE_MAX - q_byte_count))
+        # <Q means unpack 8 little-endian bytes into a C unsigned long long
+        v = long(struct.unpack("<Q", s_bytes)[0])
+        # this will fail if we have mismatching endianness and padding
+        assert v < 2L**(q_byte_count*8L)
+        if 0L <= v < modulus:
             break
+        # when we reject the value, re-hash s and try again
         s = Hash(s).digest()
     return v
 
-def derive_blinding_factor(label, secret, q, positive=True):
+def derive_blinding_factor(label, secret, modulus, positive=True):
+    '''
+    Calculate a blinding factor less than modulus, based on label and secret
+    when positive is True, return the blinding factor, and when positive is
+    False, returns the unblinding factor (the inverse value mod modulus)
+    '''
     ## Keyed share derivation
     s = PRF(secret, label)
-    v = sample(s, q)
-    s0 = v if positive else q - v
+    v = sample(s, modulus)
+    assert v < modulus
+    s0 = v if positive else modulus - v
     return s0
+
+def adjust_count_signed(count, modulus):
+    '''
+    adjust the unsigned 0 <= count < modulus, returning a signed integer
+    for odd  modulus, returns { -modulus//2, ... , 0, ... , modulus//2 }
+    for even modulus, returns { -modulus//2, ... , 0, ... , modulus//2 - 1 }
+    with the smaller positive values >= modulus//2 [- 1] becoming the largest negative
+    values
+    this is the inverse operation of x % modulus, when x is in the appropriate range
+    (x % modulus always returns a positive integer when modulus is positive)
+    '''
+    # sanity check input
+    assert count < modulus
+    # When implementing this adjustment,
+    # { 0, ... , (modulus + 1)//2 - 1}  is interpreted as that value,
+    # { (modulus + 1)//2, ... , modulus - 1 } is interpreted as that value minus modulus, or
+    # { (modulus + 1)//2 - modulus, ... , modulus - 1 - modulus }
+    #
+    # For odd modulus, (modulus + 1)//2 rounds up to modulus//2 + 1, so positive simplifies to:
+    # { 0, ... , modulus//2 + 1 - 1 }
+    # { 0, ... , modulus//2 }
+    # and because modulus == modulus//2 + modulus//2 + 1 for odd modulus, negative simplifies to:
+    # { modulus//2 + 1 - modulus//2 - modulus//2 - 1, ... , modulus - 1 - modulus}
+    # { -modulus//2, ... , -1 }
+    # Odd modulus has the same number of values above and below 0:
+    # { -modulus//2, ... , 0, ... , modulus//2 }
+    #
+    # For even modulus, (modulus+1)//2 rounds down to modulus//2, so positive simplifies to:
+    # { 0, ... , modulus//2 - 1 }
+    # and because modulus == modulus//2 + modulus//2 for even modulus, negative simplifies to:
+    # { modulus//2 - modulus//2 - modulus//2, ... , modulus - 1 - modulus}
+    # { -modulus//2, ... , -1 }
+    # Even modulus has the 1 more value below 0 than above it:
+    # { -modulus//2, ... , 0, ... , modulus//2 - 1 }
+    # This is equivalent to signed two's complement, if modulus is an integral power
+    # of two
+    if count >= ((modulus + 1L) // 2L):
+        signed_count = count - modulus
+    else:
+        signed_count = count
+    # sanity check output
+    assert signed_count >= -modulus//2L
+    if modulus % 2L == 1L:
+        # odd case
+        assert signed_count <= modulus//2L
+    else:
+        # even case
+        assert signed_count <= modulus//2L - 1L
+    return signed_count
 
 class SecureCounters(object):
     '''
@@ -208,28 +581,29 @@ class SecureCounters(object):
     tally..() uses the counts received from all of the data collectors and share keepers
     this produces the final, unblinded, noisy counts of the privcount process
 
-    see privcount/test/test_counters.py for a test case
+    see privcount/test/test_counters.py for some test cases
     '''
 
-    def __init__(self, counters, q):
+    def __init__(self, counters, modulus):
         self.counters = deepcopy(counters)
-        self.q = q
+        self.modulus = long(modulus)
         self.shares = None
 
-        # initialize all counters to 0
+        # initialize all counters to 0L
+        # counters use unlimited length integers to avoid overflow
         for key in self.counters:
             if 'bins' not in self.counters[key]:
                 return None
             for item in self.counters[key]['bins']:
                 assert len(item) == 2
-                item.append(0.0) # bin is now, e.g.: [0.0, 512.0, 0.0] for bin_left, bin_right, count
+                item.append(0L) # bin is now, e.g.: [0.0, 512.0, 0L] for bin_left, bin_right, count
 
     def _derive_all_counters(self, secret, positive):
         for key in self.counters:
             for item in self.counters[key]['bins']:
                 label = "{}_{}_{}".format(key, item[0], item[1])
-                blinding_factor = derive_blinding_factor(label, secret, self.q, positive=positive)
-                item[2] = (item[2] + blinding_factor) % self.q
+                blinding_factor = derive_blinding_factor(label, secret, self.modulus, positive=positive)
+                item[2] = (item[2] + long(blinding_factor)) % self.modulus
 
     def _blind(self, secret):
         self._derive_all_counters(secret, True)
@@ -240,19 +614,21 @@ class SecureCounters(object):
     def generate(self, uids, noise_weight):
         self.shares = {}
         for uid in uids:
-            secret = urandom(20)
+            # the secret should be at least as large as the hash output
+            secret = urandom(Hash().digest_size)
             hash_id = PRF(secret, "KEYID")
             self.shares[uid] = {'secret': secret, 'hash_id': hash_id}
             # add blinding factors to all of the counters
             self._blind(secret)
 
-	    # Add noise for each counter independently
+	      # Add noise for each counter independently
         for key in self.counters:
             for item in self.counters[key]['bins']:
                 sigma = self.counters[key]['sigma']
                 sampled_noise = noise(sigma, 1, noise_weight)
-                noise_val = int(round(sampled_noise))
-                item[2] = (item[2] + noise_val) % self.q
+                noise_val = long(round(sampled_noise))
+                # if noise_val is negative, modulus produces a positive result
+                item[2] = (item[2] + noise_val) % self.modulus
 
     def detach_blinding_shares(self):
         shares = self.shares
@@ -265,14 +641,16 @@ class SecureCounters(object):
         return shares
 
     def import_blinding_share(self, share):
-        # reverse blinding factors for all of the counters
+        '''
+        reverse blinding factors for all of the counters
+        '''
         self._unblind(b64decode(share['secret']))
 
-    def increment(self, counter_key, bin_value, num_increments=1.0):
+    def increment(self, counter_key, bin_value, num_increments=1L):
         if self.counters is not None and counter_key in self.counters:
             for item in self.counters[counter_key]['bins']:
                 if bin_value >= item[0] and bin_value < item[1]:
-                    item[2] = (item[2] + num_increments) % self.q
+                    item[2] = (item[2] + long(num_increments)) % self.modulus
 
     def _tally_counter(self, counter):
         if self.counters == None:
@@ -297,7 +675,7 @@ class SecureCounters(object):
             num_bins = len(self.counters[key]['bins'])
             for i in xrange(num_bins):
                 tally_bin = self.counters[key]['bins'][i]
-                tally_bin[2] = (tally_bin[2] + counter[key]['bins'][i][2]) % self.q
+                tally_bin[2] = (tally_bin[2] + counter[key]['bins'][i][2]) % self.modulus
 
         # success
         return True
@@ -311,8 +689,7 @@ class SecureCounters(object):
         # (negative counts are possible if noise is negative)
         for key in self.counters:
             for tally_bin in self.counters[key]['bins']:
-                if tally_bin[2] > (self.q / 2):
-                    tally_bin[2] -= self.q
+                tally_bin[2] = adjust_count_signed(tally_bin[2], self.modulus)
         return True
 
     def detach_counts(self):
@@ -333,9 +710,12 @@ def prob_exit(consensus_path, my_fingerprint, fingerprint_pool=None):
 
     net_status = next(parse_file(consensus_path, document_handler='DOCUMENT', validate=False))
     DW = float(net_status.bandwidth_weights['Wed'])/10000
-    EW = float(net_status.bandwidth_weights['Wed'])/10000
+    EW = float(net_status.bandwidth_weights['Wee'])/10000
 
-    my_bandwidth, DBW, EBW, sum_of_sq_bw = 0, 0, 0, 0
+    # we must use longs here, because otherwise sum_of_sq_bw can overflow on
+    # platforms where python has 32-bit ints
+    # (on these platforms, this happens when router_entry.bandwidth > 65535)
+    my_bandwidth, DBW, EBW, sum_of_sq_bw = 0L, 0L, 0L, 0L
 
     if my_fingerprint in net_status.routers:
         my_bandwidth = net_status.routers[my_fingerprint].bandwidth

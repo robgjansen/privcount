@@ -13,8 +13,10 @@ python privcount/plot.py -d results1.txt test1 -d results2.txt test2 ...
 
 LINEFORMATS="k,r,b,g,c,m,y"
 
-# a custom action for passing in experimental data directories when plotting
 class PlotDataAction(argparse.Action):
+    '''
+    a custom action for passing in experimental data directories when plotting
+    '''
     def __call__(self, parser, namespace, values, option_string=None):
         # extract the path to our data, and the label for the legend
         datapath = os.path.abspath(os.path.expanduser(values[0]))

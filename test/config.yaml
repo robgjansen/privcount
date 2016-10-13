@@ -7,10 +7,16 @@ tally_server:
     listen_port: 20001 # open port on which to listen for remote connections from TKSes
     sk_threshold: 1 # number of share keeper nodes required before starting
     dc_threshold: 1 # number of data collector nodes required before starting
-    checkin_period: 10 # number of seconds clients should wait before checking with TS for updates
-    collect_period: 600 # (1 week = 604800 seconds) the safe time frame of stats collection for all stats
+    # The elapsed test time is approximately:
+    #     collect_period + 2*event_period
+    collect_period: 30 # (no default, 1 week = 604800 seconds) the safe time frame of stats collection for all stats
+    # There must be at least two event periods in each collect period
+    event_period: 15 # (default: 60 seconds) how often the TS event loop runs
+    # There must be at least two checkin periods in each collect period
+    # The checking period should also be less than or equal to the event
+    # period, unless you are willing to wait a while for client status updates
+    checkin_period: 5 # (default: 60 seconds) number of seconds clients should wait before checking with TS for updates
     continue: False # start another collection phase after finishing a previous
-    q: 999999999959 ## 2147483647 # ((2**31)-1) 2^31 - 1 happens to be a prime
     # optional overrides:
     key: 'keys/ts.pem' # path to the rsa private key
     cert: 'keys/ts.cert' # path to the public key certificate

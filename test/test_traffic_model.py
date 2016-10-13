@@ -40,7 +40,7 @@ emit_p = model['emission_probability']
 tmod = TrafficModel(states, start_p, trans_p, emit_p)
 
 # sample observations
-observations = [('+', 20), ('+', 10), ('+',50), ('+',1000)]
+observations = [('+', 20), ('+', 10), ('+', 50), ('+', 1000)]
 
 print "->".join(tmod.run_viterbi(observations))
 

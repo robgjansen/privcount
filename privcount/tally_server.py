@@ -9,13 +9,14 @@ import logging
 import cPickle as pickle
 
 from time import time
+from copy import deepcopy
 from base64 import b64encode
 
 from twisted.internet import reactor, task, ssl
 from twisted.internet.protocol import ServerFactory
 
 from protocol import PrivCountServerProtocol
-from util import log_error, SecureCounters, TrafficModel, generate_keypair, generate_cert
+from util import log_error, SecureCounters, TrafficModel, generate_keypair, generate_cert, format_elapsed_time_since, format_delay_time_until, format_interval_time_between, format_last_event_time_since, normalise_path, counter_modulus, min_blinded_counter_value, max_blinded_counter_value, min_tally_counter_value, max_tally_counter_value, add_counter_limits_to_config
 
 import yaml
 
@@ -23,8 +24,25 @@ import yaml
 # for calling methods on reactor # pylint: disable=E1101
 
 def log_tally_server_status(status):
-    minutes = int((time() - status['time'])/ 60.0)
-    logging.info("--server status: PrivCount is {} for {} minutes (since {})".format(status['state'], minutes, status['time']))
+    '''
+    clients must only use the expected end time for logging: the tally
+    server may end the round early, or extend it slightly to allow for
+    network round trip times
+    '''
+
+    # until the collection round starts, the tally server doesn't know when it
+    # is expected to end
+    expected_end_msg = ""
+    if 'expected_end_time' in status:
+        stopping_ts = status['expected_end_time']
+        # we're waiting for the collection to stop
+        if stopping_ts > time():
+            expected_end_msg = ", expect collection to end in {}".format(format_delay_time_until(stopping_ts, 'at'))
+        # we expect the collection to have stopped, and the TS should be
+        # collecting results
+        else:
+            expected_end_msg = ", expect collection has ended for {}".format(format_elapsed_time_since(stopping_ts, 'since'))
+    logging.info("--server status: PrivCount is {} for {}{}".format(status['state'], format_elapsed_time_since(status['time'], 'since'), expected_end_msg))
     t, r = status['dcs_total'], status['dcs_required']
     a, i = status['dcs_active'], status['dcs_idle']
     logging.info("--server status: DataCollectors: have {}, need {}, {}/{} active, {}/{} idle".format(t, r, a, t, i, t))
@@ -41,7 +59,7 @@ class TallyServer(ServerFactory):
     '''
 
     def __init__(self, config_filepath):
-        self.config_filepath = config_filepath
+        self.config_filepath = normalise_path(config_filepath)
         self.config = None
         self.clients = {}
         self.collection_phase = None
@@ -55,7 +73,7 @@ class TallyServer(ServerFactory):
         # TODO
         return
         # load any state we may have from a previous run
-        state_filepath = self.config['state']
+        state_filepath = normalise_path(self.config['state'])
         if os.path.exists(state_filepath):
             with open(state_filepath, 'r') as fin:
                 state = pickle.load(fin)
@@ -66,7 +84,7 @@ class TallyServer(ServerFactory):
     def stopFactory(self):
         # TODO
         return
-        state_filepath = self.config['state']
+        state_filepath = normalise_path(self.config['state'])
         if self.collection_phase is not None or len(self.clients) > 0:
             # export everything that would be needed to survive an app restart
             state = {'clients': self.clients, 'collection_phase': self.collection_phase, 'idle_time': self.idle_time}
@@ -79,8 +97,9 @@ class TallyServer(ServerFactory):
         if self.config is None:
             return
 
-        # refresh and check status every minute
-        task.LoopingCall(self.refresh_loop).start(60, now=False)
+        # refresh and check status every event_period seconds
+        task.LoopingCall(self.refresh_loop).start(self.config['event_period'],
+                                                  now=False)
 
         # setup server for receiving blinded counts from the DC nodes and key shares from the SK nodes
         listen_port = self.config['listen_port']
@@ -124,7 +143,9 @@ class TallyServer(ServerFactory):
             self.collection_phase.log_status()
 
     def refresh_config(self):
-        # re-read config and process any changes
+        '''
+        re-read config and process any changes
+        '''
         try:
             logging.debug("reading config file from '%s'", self.config_filepath)
 
@@ -134,8 +155,7 @@ class TallyServer(ServerFactory):
             ts_conf = conf['tally_server']
 
             if 'counters' in ts_conf:
-                expanded_path = os.path.expanduser(ts_conf['counters'])
-                ts_conf['counters'] = os.path.abspath(expanded_path)
+                ts_conf['counters'] = normalise_path(ts_conf['counters'])
                 assert os.path.exists(os.path.dirname(ts_conf['counters']))
                 with open(ts_conf['counters'], 'r') as fin:
                     counters_conf = yaml.load(fin)
@@ -145,28 +165,26 @@ class TallyServer(ServerFactory):
 
             # if key path is not specified, look at default path, or generate a new key
             if 'key' in ts_conf and 'cert' in ts_conf:
-                expanded_path = os.path.expanduser(ts_conf['key'])
-                ts_conf['key'] = os.path.abspath(expanded_path)
+                ts_conf['key'] = normalise_path(ts_conf['key'])
                 assert os.path.exists(ts_conf['key'])
 
-                expanded_path = os.path.expanduser(ts_conf['cert'])
-                ts_conf['cert'] = os.path.abspath(expanded_path)
+                ts_conf['cert'] = normalise_path(ts_conf['cert'])
                 assert os.path.exists(ts_conf['cert'])
             else:
-                ts_conf['key'] = 'privcount.rsa_key.pem'
-                ts_conf['cert'] = 'privcount.rsa_key.cert'
+                ts_conf['key'] = normalise_path('privcount.rsa_key.pem')
+                ts_conf['cert'] = normalise_path('privcount.rsa_key.cert')
                 if not os.path.exists(ts_conf['key']) or not os.path.exists(ts_conf['cert']):
                     generate_keypair(ts_conf['key'])
                     generate_cert(ts_conf['key'], ts_conf['cert'])
 
             if 'results' in ts_conf:
-                expanded_path = os.path.expanduser(ts_conf['results'])
-                ts_conf['results'] = os.path.abspath(expanded_path)
-                assert os.path.exists(os.path.dirname(ts_conf['results']))
+                ts_conf['results'] = normalise_path(ts_conf['results'])
+            else:
+                ts_conf['results'] = normalise_path('./')
+            assert os.path.exists(os.path.dirname(ts_conf['results']))
 
             if 'traffic_model' in ts_conf:
-                expanded_path = os.path.expanduser(ts_conf['traffic_model'])
-                ts_conf['traffic_model'] = os.path.abspath(expanded_path)
+                ts_conf['traffic_model'] = normalise_path(ts_conf['traffic_model'])
                 assert os.path.exists(os.path.dirname(ts_conf['traffic_model']))
 
                 inf = open(ts_conf['traffic_model'], 'r')
@@ -177,17 +195,60 @@ class TallyServer(ServerFactory):
                 assert 'transition_probability' in model
                 assert 'emission_probability' in model
 
-            expanded_path = os.path.expanduser(ts_conf['state'])
-            ts_conf['state'] = os.path.abspath(expanded_path)
+            ts_conf['state'] = normalise_path(ts_conf['state'])
             assert os.path.exists(os.path.dirname(ts_conf['state']))
+
+            # Must be configured manually
+            assert 'collect_period' in ts_conf
+            # Set the default periods
+            ts_conf.setdefault('event_period', 60)
+            ts_conf.setdefault('checkin_period', 60)
+
+            # The event period should be less than or equal to half the
+            # collect period, otherwise privcount sometimes takes an extra
+            # event period to produce results
+            event_max = ts_conf['collect_period']/2
+            if (ts_conf['event_period'] > event_max):
+                logging.warning("event_period %d too large for collect_period %d, reducing to %d",
+                                ts_conf['event_period'],
+                                ts_conf['collect_period'],
+                                event_max)
+                ts_conf['event_period'] = event_max
+
+            # The checkin period must be less than or equal to half the
+            # collect period, otherwise privcount never finishes.
+            checkin_max = ts_conf['collect_period']/2
+            if (ts_conf['checkin_period'] > checkin_max):
+                logging.warning("checkin_period %d too large for collect_period %d, reducing to %d",
+                                ts_conf['checkin_period'],
+                                ts_conf['collect_period'],
+                                checkin_max)
+                ts_conf['checkin_period'] = checkin_max
+            # It should also be less than or equal to the event period,
+            # so that the TS is up to date with client statuses every
+            # event loop.
+            checkin_max_log = ts_conf['event_period']
+            if (ts_conf['checkin_period'] > checkin_max_log):
+                logging.info("checkin_period %d greater than event_period %d, client statuses might be delayed",
+                             ts_conf['checkin_period'],
+                             ts_conf['event_period'])
 
             assert ts_conf['listen_port'] > 0
             assert ts_conf['sk_threshold'] > 0
             assert ts_conf['dc_threshold'] > 0
-            assert ts_conf['checkin_period'] > 0
             assert ts_conf['collect_period'] > 0
+            assert ts_conf['event_period'] > 0
+            assert ts_conf['checkin_period'] > 0
             assert ts_conf['continue'] == True or ts_conf['continue'] == False
-            assert ts_conf['q'] > 0
+            # check the hard-coded counter values are sane
+            assert counter_modulus() > 0
+            assert min_blinded_counter_value() == 0
+            assert max_blinded_counter_value() > 0
+            assert max_blinded_counter_value() < counter_modulus()
+            assert min_tally_counter_value() < 0
+            assert max_tally_counter_value() > 0
+            assert max_tally_counter_value() < counter_modulus()
+            assert -min_tally_counter_value() < counter_modulus()
 
             for key in ts_conf['counters']:
                 if 'Histogram' in key:
@@ -221,7 +282,7 @@ class TallyServer(ServerFactory):
             time_since_checkin = now - c_status['alive']
 
             if time_since_checkin > 2 * self.get_checkin_period():
-                logging.warning("last checkin was {} minutes ago for client {}".format(time_since_checkin/60.0, c_status))
+                logging.warning("last checkin was {} for client {}".format(format_elapsed_time_since(time_since_checkin, 'at'), c_status))
 
             if time_since_checkin > 6 * self.get_checkin_period():
                 logging.warning("marking dead client {}".format(c_status))
@@ -277,23 +338,64 @@ class TallyServer(ServerFactory):
             'sks_required' : self.config['sk_threshold']
         }
 
+        # we can't know the expected end time until we have started
+        if self.collection_phase is not None:
+            starting_ts = self.collection_phase.get_start_ts()
+            if starting_ts is not None:
+                status['expected_end_time'] = starting_ts + self.config['collect_period']
+
         return status
 
     def set_client_status(self, uid, status): # called by protocol
-        oldstate = self.clients[uid]['state'] if uid in self.clients else status['state']
-        oldtime = self.clients[uid]['time'] if uid in self.clients else status['alive']
+        # dump the status content at debug level
+        for k in status.keys():
+            logging.debug("{} sent status: {}: {}".format(uid, k, status[k]))
+        if uid in self.clients:
+            for k in self.clients[uid].keys():
+                logging.debug("{} has stored state: {}: {}".format(uid, k, self.clients[uid][k]))
+
+        # only data collectors have a fingerprint
+        # oldfingerprint is either:
+        #  - the previous fingerprint we had recorded for this client, or
+        #  - None
+        # fingerprint is either:
+        #  - the current fingerprint we've just received in the status, or
+        #  - the previous fingerprint we had recorded for this client, or
+        #  - None
+        # in that order.
+        oldfingerprint = self.clients.get(uid, {}).get('fingerprint')
+        fingerprint = status.get('fingerprint', oldfingerprint)
+
+        # complain if fingerprint changes
+        if (fingerprint is not None and oldfingerprint is not None and
+            fingerprint != oldfingerprint):
+            logging.warning("fingerprint of {} {} state {} changed from {} to {}".format(status['type'], uid, status['state'], oldfingerprint, fingerprint))
+
+        nickname = status.get('nickname', None)
+        # uidname includes the nickname for data collectors
+        if nickname is not None:
+            uidname = uid + ' ' + nickname
+        else:
+            uidname = uid
 
         if uid not in self.clients:
-            logging.info("new {} {} joined and is {}".format(status['type'], uid, status['state']))
+            logging.info("new {} {} joined and is {}".format(status['type'], uidname, status['state']))
 
-        self.clients[uid] = status
-        if oldstate == self.clients[uid]['state']:
-            self.clients[uid]['time'] = oldtime
-        else:
+        oldstate = self.clients[uid]['state'] if uid in self.clients else status['state']
+        # for each key, replace the client value with the value from status,
+        # or, if uid is a new client, initialise uid with status
+        self.clients.setdefault(uid, status).update(status)
+        # use status['alive'] as the initial value of 'time'
+        self.clients[uid].setdefault('time', status['alive'])
+        if oldstate != self.clients[uid]['state']:
             self.clients[uid]['time'] = status['alive']
 
-        minutes = int((time() - status['time'])/ 60.0)
-        logging.info("----client status: {} {} is alive and {} for {} minutes (since {})".format(status['type'], uid, status['state'], minutes, status['time']))
+        last_event_time = status.get('last_event_time', None)
+        last_event_message = ""
+        # only log a message if we expect events
+        if self.clients[uid]['type'] == 'DataCollector':
+            last_event_message = ' ' + format_last_event_time_since(last_event_time)
+        logging.info("----client status: {} {} is alive and {} for {}{}".format(self.clients[uid]['type'], uidname, self.clients[uid]['state'], format_elapsed_time_since(self.clients[uid]['time'], 'since'), last_event_message))
 
     def get_clock_padding(self, client_uids):
         max_delay = max([self.clients[uid]['rtt']+self.clients[uid]['clock_skew'] for uid in client_uids])
@@ -318,34 +420,49 @@ class TallyServer(ServerFactory):
 
             # add all of the counters needed to count the model states
             for label in TrafficModel(model['states'], model['start_probability'], model['transition_probability'], model['emission_probability']).get_counter_labels():
+                # XXX TODO FIXME I think this way of initializing these new labels is fragile, wrong, or both
                 counters[label] = {'bins': [[0.0, float("inf")]]}
 
-        self.collection_phase = CollectionPhase(self.config['collect_period'], counters, sk_uids, sk_public_keys, dc_uids, self.config['q'], clock_padding, model)
+        # clients don't provide some context until the end of the phase
+        # so we'll wait and pass the client context to collection_phase just
+        # before stopping it
+
+        self.collection_phase = CollectionPhase(self.config['collect_period'], counters, model, sk_uids, sk_public_keys, dc_uids, counter_modulus(), clock_padding, self.config)
         self.collection_phase.start()
 
     def stop_collection_phase(self):
         assert self.collection_phase is not None
+        self.collection_phase.set_client_status(self.clients)
+        self.collection_phase.set_tally_server_status(self.get_status())
         self.collection_phase.stop()
         if self.collection_phase.is_stopped():
             self.num_completed_collection_phases += 1
-            dir_path = './' if 'results' not in self.config else self.config['results']
-            self.collection_phase.write_results(dir_path)
+            self.collection_phase.write_results(self.config['results'])
             self.collection_phase = None
             self.idle_time = time()
 
-    def get_start_config(self, client_uid): # called by protocol
-        # return None to indicate we shouldnt start the client yet
+    def get_start_config(self, client_uid):
+        '''
+        called by protocol
+        return None to indicate we shouldnt start the client yet
+        '''
         if self.collection_phase is not None:
             return self.collection_phase.get_start_config(client_uid)
         else:
             return None
 
-    def set_start_result(self, client_uid, result_data): # called by protocol
+    def set_start_result(self, client_uid, result_data):
+        '''
+        called by protocol
+        '''
         if self.collection_phase is not None:
             self.collection_phase.store_data(client_uid, result_data)
 
-    def get_stop_config(self, client_uid): # called by protocol
-        # returns None to indicate we shouldnt stop the client yet
+    def get_stop_config(self, client_uid):
+        '''
+        called by protocol
+        returns None to indicate we shouldnt stop the client yet
+        '''
         if self.collection_phase is not None:
             return self.collection_phase.get_stop_config(client_uid)
         elif client_uid in self.clients and self.clients[client_uid]['state'] == 'active':
@@ -360,16 +477,21 @@ class TallyServer(ServerFactory):
 
 class CollectionPhase(object):
 
-    def __init__(self, period, counters_config, sk_uids, sk_public_keys, dc_uids, param_q, clock_padding, traffic_model):
+    def __init__(self, period, counters_config, traffic_model, sk_uids, sk_public_keys, dc_uids, modulus, clock_padding, tally_server_config):
         # store configs
         self.period = period
         self.counters_config = counters_config
+        self.traffic_model = traffic_model
         self.sk_uids = sk_uids
         self.sk_public_keys = sk_public_keys
         self.dc_uids = dc_uids
-        self.param_q = param_q
+        self.modulus = modulus
         self.clock_padding = clock_padding
-        self.traffic_model = traffic_model
+        # make a deep copy, so we can delete unnecesary keys
+        self.tally_server_config = deepcopy(tally_server_config)
+        self.tally_server_status = None
+        self.client_status = {}
+        self.client_config = {}
 
         # setup some state
         self.state = 'new' # states: new -> starting_dcs -> starting_sks -> started -> stopping -> stopped
@@ -438,10 +560,12 @@ class CollectionPhase(object):
                 self._change_state('stopped')
 
     def lost_client(self, client_uid):
-        # this is called when client_uid isnt responding
-        # we could mark error_flag as true and abort, or keep counting anyway
-        # and hope we can recover from the error by adding the local state
-        # files later... TODO
+        '''
+        this is called when client_uid isn't responding
+        we could mark error_flag as true and abort, or keep counting anyway
+        and hope we can recover from the error by adding the local state
+        files later... TODO
+        '''
         pass
 
     def store_data(self, client_uid, data):
@@ -479,17 +603,27 @@ class CollectionPhase(object):
                 self._change_state('started')
 
         elif self.state == 'stopping':
+            # record the configuration for the client context
+            response_config = data.get('Config', None)
+            if response_config is not None:
+                self.set_client_config(client_uid, response_config)
+
             if client_uid in self.need_counts:
                 # the client got our stop command
-                counts = data
-                logging.info("received {} counts from stopped client {}".format(len(counts), client_uid))
+                counts = data.get('Counts', None)
 
-                if not self.is_error() and len(counts) == 0:
+                if counts is None:
+                    logging.warning("received no counts from {}, final results will not be available".format(client_uid))
+                    self.error_flag = True
+                elif not self.is_error() and len(counts) == 0:
                     logging.warning("received empty counts from {}, final results will not be available".format(client_uid))
                     self.error_flag = True
-                if not self.is_error():
+                elif not self.is_error():
+                    logging.info("received {} counts from stopped client {}".format(len(counts), client_uid))
                     # add up the tallies from the client
-                    self.final_counts[client_uid] = data
+                    self.final_counts[client_uid] = counts
+                else:
+                    logging.warning("received counts: error from stopped client {}".format(client_uid))
                 self.need_counts.remove(client_uid)
 
     def is_participating(self, client_uid):
@@ -514,7 +648,7 @@ class CollectionPhase(object):
             return None
 
         assert self.state == 'starting_dcs' or self.state == 'starting_sks'
-        config = {'q':self.param_q}
+        config = {}
 
         if self.state == 'starting_dcs' and client_uid in self.dc_uids:
             config['sharekeepers'] = {}
@@ -543,7 +677,122 @@ class CollectionPhase(object):
         logging.info("sending stop command to {} {} request for counters".format(client_uid, msg))
         return config
 
+    def set_tally_server_status(self, status):
+        '''
+        status is a dictionary
+        '''
+        # make a deep copy, so we can delete unnecesary keys
+        self.tally_server_status = deepcopy(status)
+
+    def set_client_status(self, status):
+        '''
+        status is a dictionary of dictionaries, indexed by UID, and then by the
+        attribute: name, fingerprint, ...
+        '''
+        self.client_status = deepcopy(status)
+
+    def set_client_config(self, uid, config):
+        '''
+        config is a dictionary, indexed by the attributes: name, fingerprint, ...
+        '''
+        self.client_config[uid] = deepcopy(config)
+
+    def get_client_types(self):
+        '''
+        returns a list of unique types of clients in self.client_status
+        '''
+        types = []
+        if self.client_status is None:
+            return types
+        for uid in self.client_status:
+            for k in self.client_status[uid].keys():
+                if k == 'type' and not self.client_status[uid]['type'] in types:
+                    types.append(self.client_status[uid]['type'])
+        return types
+
+    def get_client_context_by_type(self):
+        '''
+        returns a context for each client by UID, grouped by client type
+        '''
+        contexts = {}
+        # we can't group by type without the type from the status
+        if self.client_status is None:
+            return contexts
+        for type in self.get_client_types():
+            for uid in self.client_status:
+                if self.client_status[uid].get('type', 'NoType') == type:
+                    contexts.setdefault(type, {}).setdefault(uid, {})['Status'] = self.client_status[uid]
+                    # remove the (inner) types, because they're redundant now
+                    del contexts[type][uid]['Status']['type']
+                    # add the client config as well
+                    if self.client_config is not None and uid in self.client_config:
+                        contexts[type][uid]['Config'] = self.client_config[uid]
+        return contexts
+
+    def get_result_context(self):
+        '''
+        the context is written out with the tally results
+        '''
+        result_context = {}
+
+        # log the times used for the round
+        result_time = {}
+        # Do we want to round these times?
+        # (That is, use begin and end instead?)
+        result_time['Start'] = self.starting_ts
+        result_time['Stop'] = self.stopping_ts
+        # the collect, event, and checkin periods are in the tally server config
+        result_time['ClockPadding'] = self.clock_padding
+        result_context['Time'] = result_time
+
+        # the bins are listed in each Tally, so we don't duplicate them here
+        #result_count_context['CounterBins'] = self.counters_config
+
+        # add the context for the clients that participated in the count
+        # this includes all status information by default
+        # clients are grouped by type, rather than listing them all by UID at
+        # the top level of the context
+        if self.client_status is not None:
+            result_context.update(self.get_client_context_by_type())
+
+        # now remove any context we are sure we don't want
+        # We don't need the paths from the configs
+        for uid in result_context.get('DataCollector', {}):
+            if 'state' in result_context['DataCollector'][uid].get('Config', {}):
+                del result_context['DataCollector'][uid]['Config']['state']
+        # We don't want the public key in the ShareKeepers' statuses
+        for uid in result_context.get('ShareKeeper', {}):
+            if 'key' in result_context['ShareKeeper'][uid].get('Config', {}):
+                del result_context['ShareKeeper'][uid]['Config']['key']
+            if 'state' in result_context['ShareKeeper'][uid].get('Config', {}):
+                del result_context['ShareKeeper'][uid]['Config']['state']
+            if 'public_key' in result_context['ShareKeeper'][uid].get('Status', {}):
+                del result_context['ShareKeeper'][uid]['Status']['public_key']
+
+        # add the status and config for the tally server itself
+        result_context['TallyServer'] = {}
+        if self.tally_server_status is not None:
+            result_context['TallyServer']['Status'] = self.tally_server_status
+        # even though the counter limits are hard-coded, include them anyway
+        result_context['TallyServer']['Config'] = add_counter_limits_to_config(self.tally_server_config)
+
+        # We don't need the paths from the configs
+        if 'cert' in result_context['TallyServer']['Config']:
+            del result_context['TallyServer']['Config']['cert']
+        if 'key' in result_context['TallyServer']['Config']:
+            del result_context['TallyServer']['Config']['key']
+        if 'state' in result_context['TallyServer']['Config']:
+            del result_context['TallyServer']['Config']['state']
+        # And we don't need the bins, they're duplicated in 'Tally'
+        if 'counters' in result_context['TallyServer']['Config']:
+            del result_context['TallyServer']['Config']['counters']
+
+        return result_context
+
     def write_results(self, path_prefix):
+        # this should already have been done, but let's make sure
+        path_prefix = normalise_path(path_prefix)
+
         if not self.is_stopped():
             logging.warning("trying to write results before collection phase is stopped")
             return
@@ -551,7 +800,7 @@ class CollectionPhase(object):
             logging.warning("no tally results to write!")
             return
 
-        tallied_counter = SecureCounters(self.counters_config, self.param_q)
+        tallied_counter = SecureCounters(self.counters_config, self.modulus)
         tally_was_successful = tallied_counter.tally_counters(self.final_counts.values())
 
         if not tally_was_successful:
@@ -560,12 +809,30 @@ class CollectionPhase(object):
 
         tallied_counts = tallied_counter.detach_counts()
 
+        # For backwards compatibility, write out a "tallies" file
+        # This file only has the counts
         begin, end = int(round(self.starting_ts)), int(round(self.stopping_ts))
-        filepath = "{}/privcount.tallies.{}-{}.json".format(path_prefix, begin, end)
+        filepath = os.path.join(path_prefix, "privcount.tallies.{}-{}.json".format(begin, end))
         with open(filepath, 'a') as fout:
             json.dump(tallied_counts, fout, sort_keys=True, indent=4)
 
-        logging.info("tally was successful, results for phase from %d to %d were written to file '%s'", begin, end, filepath)
+        #logging.info("tally was successful, counts for phase from %d to %d were written to file '%s'", begin, end, filepath)
+
+        # Write out an "outcome" file that adds context to the counts
+        # This makes it easier to interpret results later on
+        result_info = {}
+
+        # add the existing list of counts as its own item
+        result_info['Tally'] = tallied_counts
+
+        # add the context of the outcome as another item
+        result_info['Context'] = self.get_result_context()
+
+        filepath = os.path.join(path_prefix, "privcount.outcome.{}-{}.json".format(begin, end))
+        with open(filepath, 'a') as fout:
+            json.dump(result_info, fout, sort_keys=True, indent=4)
+
+        logging.info("tally was successful, outcome of phase of {} was written to file '{}'".format(format_interval_time_between(begin, 'from', end), filepath))
         self.final_counts = {}
 
     def log_status(self):
@@ -576,11 +843,9 @@ class CollectionPhase(object):
         elif self.state == 'starting_sks':
             message += ", waiting to send shares to {} SKs: {}".format(len(self.need_shares), ','.join([ uid for uid in self.need_shares]))
         elif self.state == 'started':
-            minutes = (time() - self.starting_ts) / 60.0
-            message += ", running for {} minutes (since {})".format(minutes, self.starting_ts)
+            message += ", running for {}".format(format_elapsed_time_since(self.starting_ts, 'since'))
         elif self.state == 'stopping':
-            minutes = (time() - self.stopping_ts) / 60.0
-            message += ", trying to stop for {} minutes (since {})".format(minutes, self.stopping_ts)
+            message += ", trying to stop for {}".format(format_elapsed_time_since(self.stopping_ts, 'since'))
             message += ", waiting to receive counts from {} DCs/SKs: {}".format(len(self.need_counts), ','.join([ uid for uid in self.need_counts]))
 
         logging.info(message)

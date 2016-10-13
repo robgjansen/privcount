@@ -6,3 +6,5 @@ venv
 # test outputs
 test/privcount.results.pdf
 test/privcount.tallies.*.json
+test/privcount.outcome.*.json
+test/old

@@ -13,6 +13,7 @@ from twisted.internet import reactor
 from twisted.internet.protocol import ServerFactory
 
 from privcount.protocol import TorControlServerProtocol
+from privcount.util import normalise_path
 
 listener = None
 
@@ -50,7 +51,7 @@ class PrivCountDataInjector(ServerFactory):
         if self.logpath == '-':
             self.event_file = sys.stdin
         else:
-            self.event_file = open(self.logpath, 'r')
+            self.event_file = open(normalise_path(self.logpath), 'r')
         self._inject_events()
 
     def stop_injecting(self):

@@ -7,12 +7,14 @@ import os
 import logging
 import cPickle as pickle
 
+from copy import deepcopy
+
 from twisted.internet import reactor, ssl
 from twisted.internet.protocol import ReconnectingClientFactory
 
 from protocol import PrivCountClientProtocol
 from tally_server import log_tally_server_status
-from util import SecureCounters, log_error, get_public_digest, generate_keypair, get_serialized_public_key, load_private_key_file, decrypt
+from util import SecureCounters, log_error, get_public_digest, generate_keypair, get_serialized_public_key, load_private_key_file, decrypt, normalise_path, counter_modulus, add_counter_limits_to_config
 
 import yaml
 
@@ -24,7 +26,7 @@ class ShareKeeper(ReconnectingClientFactory):
     '''
 
     def __init__(self, config_filepath):
-        self.config_filepath = config_filepath
+        self.config_filepath = normalise_path(config_filepath)
         self.config = None
         self.keystore = None
 
@@ -35,7 +37,7 @@ class ShareKeeper(ReconnectingClientFactory):
         # TODO
         return
         # load any state we may have from a previous run
-        state_filepath = self.config['state']
+        state_filepath = normalise_path(self.config['state'])
         if os.path.exists(state_filepath):
             with open(state_filepath, 'r') as fin:
                 state = pickle.load(fin)
@@ -44,7 +46,7 @@ class ShareKeeper(ReconnectingClientFactory):
     def stopFactory(self):
         # TODO
         return
-        state_filepath = self.config['state']
+        state_filepath = normalise_path(self.config['state'])
         if self.keystore is not None:
             # export everything that would be needed to survive an app restart
             state = {'keystore': self.keystore}
@@ -52,7 +54,7 @@ class ShareKeeper(ReconnectingClientFactory):
                 pickle.dump(state, fout)
 
     def run(self):
-        # load iniital config
+        # load initial config
         self.refresh_config()
         if self.config is None:
             logging.critical("cannot start due to error in config file")
@@ -81,15 +83,17 @@ class ShareKeeper(ReconnectingClientFactory):
         reactor.connectSSL(ts_ip, ts_port, self, ssl.ClientContextFactory()) # pylint: disable=E1101
 
     def do_start(self, config): # called by protocol
-        # this is called when we receive a command from the TS to start a new collection phase
-        # return None if failure, otherwise json will encode the result back to TS
+        '''
+        this is called when we receive a command from the TS to start a new collection phase
+        return None if failure, otherwise json will encode the result back to TS
+        '''
         logging.info("got command to start new collection phase")
 
-        if 'q' not in config or 'shares' not in config or 'counters' not in config:
+        if 'shares' not in config or 'counters' not in config:
             logging.warning("start command from tally server cannot be completed due to missing data")
             return None
 
-        self.keystore = SecureCounters(config['counters'], config['q'])
+        self.keystore = SecureCounters(config['counters'], counter_modulus())
         share_list = config['shares']
 
         private_key = load_private_key_file(self.config['key'])
@@ -103,9 +107,11 @@ class ShareKeeper(ReconnectingClientFactory):
         return {}
 
     def do_stop(self, config): # called by protocol
-        # the TS wants us to stop the current collection phase
-        # they may or may not want us to send back our counters
-        # return None if failure, otherwise json will encode result back to the TS
+        '''
+        the TS wants us to stop the current collection phase
+        they may or may not want us to send back our counters
+        return None if failure, otherwise json will encode result back to the TS
+        '''
         logging.info("got command to stop collection phase")
         if 'send_counters' not in config:
             return None
@@ -113,23 +119,29 @@ class ShareKeeper(ReconnectingClientFactory):
         wants_counters = 'send_counters' in config and config['send_counters'] is True
         logging.info("tally server {} final counts".format("wants" if wants_counters else "does not want"))
 
-        response = None
+        response_counts = None
         if wants_counters:
             # send our counts, its an error if we dont have any
             if self.keystore is not None:
-                response = self.keystore.detach_counts()
-                logging.info("sending counts from {} counters".format(len(response)))
+                response_counts = self.keystore.detach_counts()
+                logging.info("sending counts from {} counters".format(len(response_counts)))
         else:
             # this is never an error, but they dont want anything
-            response = {}
+            response_counts = {}
 
         del self.keystore
         self.keystore = None
         logging.info("collection phase was stopped")
+        response = {}
+        response['Counts'] = response_counts
+        # even though the counter limits are hard-coded, include them anyway
+        response['Config'] = add_counter_limits_to_config(self.config)
         return response
 
     def refresh_config(self):
-        # re-read config and process any changes
+        '''
+        re-read config and process any changes
+        '''
         try:
             logging.debug("reading config file from '%s'", self.config_filepath)
 
@@ -140,18 +152,16 @@ class ShareKeeper(ReconnectingClientFactory):
 
             # if key path is not specified, look at default path, or generate a new key
             if 'key' in sk_conf:
-                expanded_path = os.path.expanduser(sk_conf['key'])
-                sk_conf['key'] = os.path.abspath(expanded_path)
+                sk_conf['key'] = normalise_path(sk_conf['key'])
                 assert os.path.exists(sk_conf['key'])
             else:
-                sk_conf['key'] = 'privcount.rsa_key.pem'
+                sk_conf['key'] = normalise_path('privcount.rsa_key.pem')
                 if not os.path.exists(sk_conf['key']):
                     generate_keypair(sk_conf['key'])
 
             sk_conf['name'] = get_public_digest(sk_conf['key'])
 
-            expanded_path = os.path.expanduser(sk_conf['state'])
-            sk_conf['state'] = os.path.abspath(expanded_path)
+            sk_conf['state'] = normalise_path(sk_conf['state'])
             assert os.path.exists(os.path.dirname(sk_conf['state']))
 
             assert sk_conf['tally_server_info']['ip'] is not None
