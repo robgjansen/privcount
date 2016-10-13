@@ -2,7 +2,7 @@ PyYAML==3.11
 Twisted==15.5.0
 attrs==15.2.0
 cffi==1.5.2
-cryptography==1.2.2
+cryptography==1.5.2
 enum34==1.1.2
 idna==2.0
 ipaddress==1.0.16

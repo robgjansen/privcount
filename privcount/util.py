@@ -14,18 +14,21 @@ import json
 
 from subprocess import Popen, PIPE
 from random import gauss, randint
-from os import urandom, path
+from os import urandom, path, _exit
 from math import sqrt, exp, log
 from time import time, strftime, gmtime
 from copy import deepcopy
 from base64 import b64encode, b64decode
 
-from hashlib import sha256 as Hash
+from hashlib import sha256 as DigestHash
+# encryption using SHA256 requires cryptography >= 1.4
+from cryptography.hazmat.primitives.hashes import SHA256 as CryptoHash
 
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.exceptions import UnsupportedAlgorithm
 
 def load_compressed_json(filename):
     cmd = "xz --decompress --stdout {0}".format(filename)
@@ -59,7 +62,7 @@ def get_public_bytes(key_string, is_private_key=True):
     return public_key.public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo)
 
 def get_public_digest_string(key_string, is_private_key=True):
-    return Hash(get_public_bytes(key_string, is_private_key)).hexdigest()
+    return DigestHash(get_public_bytes(key_string, is_private_key)).hexdigest()
 
 def get_public_digest(key_path, is_private_key=True):
     with open(key_path, 'rb') as key_file:
@@ -72,25 +75,60 @@ def get_serialized_public_key(key_path, is_private_key=True):
     return data
 
 def encrypt(pub_key, plaintext):
-    ciphertext = pub_key.encrypt(
-        plaintext,
-        padding.OAEP(
-            mgf=padding.MGF1(algorithm=hashes.SHA1()),
-            algorithm=hashes.SHA1(),
-            label=None
-        )
-    )
+    """
+    Encrypt plaintext with the RSA public key pub_key, using CryptoHash()
+    as the OAEP/MGF1 padding hash.
+    Returns the b64encode'd ciphertext.
+    Fails and calls os._exit on an UnsupportedAlgorithm exception.
+    (Other encryption failures result in an exception being raised)
+    """
+    try:
+        ciphertext = pub_key.encrypt(
+            plaintext,
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=CryptoHash()),
+                algorithm=CryptoHash(),
+                label=None
+                )
+            )
+    except UnsupportedAlgorithm as e:
+        # a failure to encrypt our own data is a fatal error
+        # the most likely cause of this error is an old cryptography library
+        logging.error("Fatal error: encryption hash {} unsupported, try " +
+                      "upgrading to cryptography >= 1.4. Exception: {}".format(
+                          CryptoHash, e))
+        # die immediately using os._exit()
+        # we can't use sys.exit() here, because twisted catches and logs it
+        _exit(1)
     return b64encode(ciphertext)
 
 def decrypt(priv_key, ciphertext):
-    plaintext = priv_key.decrypt(
-        b64decode(ciphertext),
-        padding.OAEP(
-            mgf=padding.MGF1(algorithm=hashes.SHA1()),
-            algorithm=hashes.SHA1(),
-            label=None
-        )
-    )
+    """
+    Decrypt b64encoded ciphertext with the RSA private key priv_key, using
+    CryptoHash() as the OAEP/MGF1 padding hash.
+    Returns the plaintext.
+    Fails and calls os._exit on an UnsupportedAlgorithm exception
+    (Other decryption failures result in an exception being raised)
+    """
+    try:
+        plaintext = priv_key.decrypt(
+            b64decode(ciphertext),
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=CryptoHash()),
+                algorithm=CryptoHash(),
+                label=None
+                )
+            )
+    except UnsupportedAlgorithm as e:
+        # a failure to dencrypt someone else's data is not typically a fatal
+        # error, but in this particular case, the most likely cause of this
+        # error is an old cryptography library
+        logging.error("Fatal error: encryption hash {} unsupported, try " +
+                      "upgrading to cryptography >= 1.4. Exception: {}".format(
+                          CryptoHash, e))
+        # die immediately using os._exit()
+        # we can't use sys.exit() here, because twisted catches and logs it
+        _exit(1)
     return plaintext
 
 def generate_keypair(key_out_path):
@@ -378,7 +416,7 @@ def min_tally_counter_value():
     The hard-coded minimum value for a tallied counter
     Tallied counters are signed, to allow for negative noise
     '''
-    return adjust_count_signed((counter_modulus() + 1)//2,
+    return adjust_count_signed((counter_modulus() + 1L)//2L,
                                counter_modulus())
 
 def max_tally_counter_value():
@@ -386,7 +424,7 @@ def max_tally_counter_value():
     The hard-coded maximum value for a tallied counter
     Tallied counters are signed, to allow for negative noise
     '''
-    return adjust_count_signed((counter_modulus() + 1)//2 - 1,
+    return adjust_count_signed((counter_modulus() + 1L)//2L - 1L,
                                counter_modulus())
 
 def add_counter_limits_to_config(config):
