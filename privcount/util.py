@@ -750,11 +750,11 @@ class TrafficModel(object):
         labels = []
         for state in self.emit_p:
             for direction in self.emit_p[state]:
-                labels.append("TrafficModelTotalEmissions_{}{}".format(state, direction))
-                labels.append("TrafficModelTotalDelay_{}{}".format(state, direction))
+                labels.append("TrafficModelTotalEmissions_{}_{}".format(state, direction))
+                labels.append("TrafficModelTotalDelay_{}_{}".format(state, direction))
         for src_state in self.trans_p:
             for dst_state in self.trans_p[src_state]:
-                labels.append("TrafficModelTotalTransitions_{}{}".format(src_state, dst_state))
+                labels.append("TrafficModelTotalTransitions_{}_{}".format(src_state, dst_state))
         return labels
 
     def run_viterbi(self, obs):

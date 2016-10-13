@@ -157,7 +157,7 @@ class DataCollector(ReconnectingClientFactory):
             tmodel = TrafficModel(states, start_p, trans_p, emit_p)
 
             # now add in the keys needed for counting
-            # NOTE the tally server send these, but we ignored them above
+            # NOTE the tally server sent these, but we ignored them above
             for label in tmodel.get_counter_labels():
                 # XXX TODO FIXME these sigmas should not be 0
                 dc_counters[label] = {'bins': [[0.0, float("inf")]], 'sigma': 0.0}
@@ -666,13 +666,13 @@ class Aggregator(ReconnectingClientFactory):
                 (dir_code, delay) = observed_packet_delays[i] # delay is in microseconds
                 state = likliest_states[i]
 
-                label = "TrafficModelTotalEmissions_{}{}".format(state, dir_code)
+                label = "TrafficModelTotalEmissions_{}_{}".format(state, dir_code)
                 self.secure_counters.increment(label, 1, num_increments=1)
-                label = "TrafficModelTotalDelay_{}{}".format(state, dir_code)
+                label = "TrafficModelTotalDelay_{}_{}".format(state, dir_code)
                 self.secure_counters.increment(label, 1, num_increments=delay)
                 if (i+1) < num_states:
                     next_state = likliest_states[i+1]
-                    label = "TrafficModelTotalTransitions_{}{}".format(state, next_state)
+                    label = "TrafficModelTotalTransitions_{}_{}".format(state, next_state)
                     self.secure_counters.increment(label, 1, num_increments=1)
 
         # clear all 'packet' data for this stream

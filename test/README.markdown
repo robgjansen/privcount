@@ -35,16 +35,17 @@ Run the unit tests: (optional)
     python test_format_time.py
     python test_keyed_random.py
     python test_counters.py
+    python test_traffic_model.py
 
 If you have a local privcount-patched Tor instance on control port 9050, you can test that it supports PRIVCOUNT events: (optional)
 
-    python test_counters.py
+    python test_tor_ctl_event.py
 
 #### Integration Tests
 
 Start the event server that will supply events to the data collector:
 
-    xzcat events.txt.xz | privcount inject --port 20003 --log - --simulate
+    zcat events.txt.gz | privcount inject --port 20003 --simulate --log -
 
 Start the PrivCount components:
 
