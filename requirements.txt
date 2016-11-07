@@ -1,16 +1,22 @@
-PyYAML==3.11
-Twisted==15.5.0
-attrs==15.2.0
-cffi==1.5.2
-cryptography==1.5.2
-enum34==1.1.2
-idna==2.0
-ipaddress==1.0.16
-pyOpenSSL==0.15.1
-pyasn1==0.1.9
-pyasn1-modules==0.0.8
-pycparser==2.14
-service-identity==16.0.0
-six==1.10.0
-wsgiref==0.1.2
-zope.interface==4.1.3
+# Requirements for privcount
+
+# PrivCount uses >= to download the latest package versions
+# This is particularly important for (non-backported) security fixes
+
+# Listed versions worked with privcount when the dependency was added
+PyYAML>=3.11
+Twisted>=15.5.0
+attrs>=15.2.0
+cffi>=1.5.2
+cryptography>=1.5.2 # must be >=1.4 for SHA256 hashes in RSA encryption
+enum34>=1.1.2
+idna>=2.0
+ipaddress>=1.0.16
+pyOpenSSL>=0.15.1
+pyasn1>=0.1.9
+pyasn1-modules>=0.0.8
+pycparser>=2.14
+service-identity>=16.0.0
+six>=1.10.0
+wsgiref>=0.1.2
+zope.interface>=4.1.3

@@ -7,22 +7,15 @@
 # this test will exit successfully, unless the counters are more than
 # MAX_DIVERGENCE from the full range or equal bin counts
 
-from os import urandom
-from random import randrange
-from privcount.util import sample, derive_blinding_factor, Hash, counter_modulus
+from random import SystemRandom
+from privcount.util import sample, sample_randint, derive_blinding_factor, counter_modulus
 
 # Allow this much divergence from the full range and equal bin counts
 MAX_DIVERGENCE = 0.02
 MAX_DIVERGENCE_PERCENT = MAX_DIVERGENCE * 100.0
 
 # some of the privcount random functions expect additional arguments
-IV = "TEST"
 POSITIVE = True
-
-# this should be equal to privcount's hard-coded key length
-# key should contain at least 32 bytes of entropy, as the hash is 32 bytes
-# (this lack of entropy won't be apparent in the output, because it is hashed)
-PRIV_KEY_LEN = Hash().digest_size
 
 # the hard-coded modulus value
 PRIV_COUNTER_MODULUS = counter_modulus()
@@ -35,39 +28,42 @@ BIN_COUNT = 2
 
 # Each of these value functions should return a uniformly distributed
 # pseudo-random value in [0, modulus)
-# (we don't check PRF, because it returns raw bytes, and we'd only be finding
-# errors in our own unpacking and sampling code)
 
-
-def random_value(key, modulus):
+def random_value(modulus):
     '''
-    call python's random.randrange(modulus), ignoring key
+    call python's random.randrange(modulus)
     '''
     # random.randrange() takes one argument: a maximum value
     # and returns a random value in [0, modulus)
     # it is *NOT* uniformy distributed in python versions < 3.2
     # but this test is not sophisticated enough to pick that up
     # https://docs.python.org/3.5/library/random.html#random.randrange
-    return randrange(modulus)
+    return SystemRandom().randrange(modulus)
 
-def sample_value(key, modulus):
+def sample_value(modulus):
     '''
-    call privcount.util.sample with key and modulus
+    call privcount.util.sample with modulus
     '''
-    # sample takes two arguments: a key string, and a maximum value
-    # and returns a random value in [0, modulus)
-    return sample(key, modulus)
+    # sample takes a modulus value, and returns a random value in [0, modulus)
+    return sample(modulus)
 
-def blinding_value(key, modulus):
+def sample_randint_value(modulus):
     '''
-    call privcount.util.blinding_value with IV, key, modulus, and POSITIVE
+    call privcount.util.sample_randint with 0 and modulus - 1
     '''
-    # derive_blinding_factor takes four arguments: a label string,
-    # a secret string, a maximum value, and a boolean indicating
-    # the direction of blinding
+    # sample_randint takes values a and b, and returns a random value in [a, b]
+    return sample_randint(0, modulus - 1)
+
+def blinding_value(modulus):
+    '''
+    call privcount.util.blinding_value with modulus and POSITIVE
+    '''
+    # derive_blinding_factor takes a blinding factor, a modulus value, and a
+    # boolean indicating whether to blind or unblind,
     # and returns a random value in [0, modulus) for blinding,
     # and (0, modulus] for unblinding
-    value = derive_blinding_factor(IV, key, modulus, POSITIVE)
+    # None means "generate a blinding factor"
+    value = derive_blinding_factor(None, modulus, POSITIVE)
     if not POSITIVE:
         # adjust (0, modulus] to [0, modulus), ignoring modulus
         value -= 1
@@ -75,15 +71,14 @@ def blinding_value(key, modulus):
 
 def range_trial(result_count, func, modulus):
     '''
-    Observe the range of func(key, modulus) with random keys for result_count trials
+    Observe the range of func(modulus) with random keys for result_count trials
     Return (min_value, max_value)
     '''
     min_value = None
     max_value = None
     count = 0
     while count < result_count:
-        key = urandom(PRIV_KEY_LEN)
-        value = func(key, modulus)
+        value = func(modulus)
         if min_value is None or value < min_value:
             min_value = value
         if max_value is None or value > max_value:
@@ -94,9 +89,9 @@ def range_trial(result_count, func, modulus):
 def bin(value, modulus, n_bins):
     '''
     Bin a value in [0, modulus) into one of n_bins
-    returns a bin number in [0, n_bins) corresponding to value, or None if value
-    does not fit in any bin (this can happen if n_bins does not divide evenly
-    into modulus)
+    returns a bin number in [0, n_bins) corresponding to value, or None if
+    value does not fit in any bin (this can happen if n_bins does not divide
+    evenly into modulus)
     '''
     # find values that don't fit evenly in any bin
     residual = modulus % n_bins
@@ -109,12 +104,12 @@ def bin(value, modulus, n_bins):
         return None
     return value // bin_width
 
-def key_bin(func, key, modulus, n_bins):
+def func_bin(func, modulus, n_bins):
     '''
-    Bin the value of func(key, modulus) into one of n_bins, returning the bin number
-    returns the bin corresponding to func's output for key
+    Bin the value of func(modulus) into one of n_bins, returning the bin number
+    returns the bin corresponding to func's output
     '''
-    value = func(key, modulus)
+    value = func(modulus)
     assert value >= 0L
     assert value < modulus
     bin_number = bin(value, modulus, n_bins)
@@ -126,14 +121,13 @@ def key_bin(func, key, modulus, n_bins):
 
 def bin_trial(result_count, func, modulus, n_bins):
     '''
-    Do result_count trials of func(key, modulus) with random keys, and bin each
-    result, returning a list of bin counts
+    Do result_count trials of func(modulus), and bin each result
+    returns a list of bin counts
     '''
     bins = list(0 for i in range(n_bins))
     count = 0
     while count < result_count:
-        key = urandom(PRIV_KEY_LEN)
-        bin_number = key_bin(func, key, modulus, n_bins)
+        bin_number = func_bin(func, modulus, n_bins)
         if bin_number is not None:
             bins[bin_number] += 1
             count += 1
@@ -187,6 +181,10 @@ print ""
 
 print "privcount.sample:"
 run_trial(N_TRIALS, sample_value, PRIV_COUNTER_MODULUS, BIN_COUNT)
+print ""
+
+print "privcount.sample_randint:"
+run_trial(N_TRIALS, sample_randint_value, PRIV_COUNTER_MODULUS, BIN_COUNT)
 print ""
 
 print "privcount.derive_blinding_factor:"

@@ -14,7 +14,7 @@ from twisted.internet.protocol import ReconnectingClientFactory
 
 from protocol import PrivCountClientProtocol
 from tally_server import log_tally_server_status
-from util import SecureCounters, log_error, get_public_digest, generate_keypair, get_serialized_public_key, load_private_key_file, decrypt, normalise_path, counter_modulus, add_counter_limits_to_config
+from util import SecureCounters, log_error, get_public_digest, generate_keypair, get_serialized_public_key, load_private_key_file, decrypt, normalise_path, counter_modulus, add_counter_limits_to_config, check_noise_weight_config
 
 import yaml
 
@@ -28,6 +28,7 @@ class ShareKeeper(ReconnectingClientFactory):
     def __init__(self, config_filepath):
         self.config_filepath = normalise_path(config_filepath)
         self.config = None
+        self.start_config = None
         self.keystore = None
 
     def buildProtocol(self, addr):
@@ -84,13 +85,30 @@ class ShareKeeper(ReconnectingClientFactory):
 
     def do_start(self, config): # called by protocol
         '''
-        this is called when we receive a command from the TS to start a new collection phase
-        return None if failure, otherwise json will encode the result back to TS
+        this is called when we receive a command from the TS to start a new
+        collection phase
+        return None if failure, otherwise the protocol will encode the result
+        in json and send it back to TS
         '''
         logging.info("got command to start new collection phase")
+        # keep the start config to send to the TS at the end of the collection
+        # deepcopy so we can delete the (encrypted) secrets from the shares
+        self.start_config = deepcopy(config)
+        # discard the secrets
+        # we haven't checked if any shares are present, so don't assume
+        for share in self.start_config.get('shares', []):
+            # this is still encrypted, so there's no need for a secure delete
+            del share['secret']
+            share['secret'] = "(encrypted blinding share, deleted by share keeper)"
 
-        if 'shares' not in config or 'counters' not in config:
+        if ('shares' not in config or 'counters' not in config or
+            'noise_weight' not in config or 'dc_threshold' not in config):
             logging.warning("start command from tally server cannot be completed due to missing data")
+            return None
+
+        # if the noise weights don't pass the validity checks, fail
+        if not check_noise_weight_config(config['noise_weight'],
+                                         config['dc_threshold']):
             return None
 
         self.keystore = SecureCounters(config['counters'], counter_modulus())
@@ -100,10 +118,23 @@ class ShareKeeper(ReconnectingClientFactory):
         for share in share_list:
             encrypted_secret = share['secret']
             secret = decrypt(private_key, encrypted_secret)
+            # TODO: secure delete
             share['secret'] = secret
-            self.keystore.import_blinding_share(share)
+            blinding_result = self.keystore.import_blinding_share(share)
+            if not blinding_result:
+                # the structure of the imported share did not match the
+                # configured counters
+                # this is likely a configuration error or a programming bug,
+                # but there is also no way to detect the TS modifying the data
+                logging.warning("failed to import blinding share {} config {}",
+                                share, config)
+                # TODO: secure delete
+                del private_key
+                return None
 
         logging.info("successfully started and imported {} blinding shares for {} counters".format(len(share_list), len(config['counters'])))
+        # TODO: secure delete
+        del private_key
         return {}
 
     def do_stop(self, config): # called by protocol
@@ -136,6 +167,9 @@ class ShareKeeper(ReconnectingClientFactory):
         response['Counts'] = response_counts
         # even though the counter limits are hard-coded, include them anyway
         response['Config'] = add_counter_limits_to_config(self.config)
+        # and include the config sent by the tally server in do_start
+        if self.start_config is not None:
+            response['Config']['Start'] = self.start_config
         return response
 
     def refresh_config(self):

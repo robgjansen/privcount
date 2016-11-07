@@ -16,7 +16,7 @@ from twisted.internet import reactor, task, ssl
 from twisted.internet.protocol import ServerFactory
 
 from protocol import PrivCountServerProtocol
-from util import log_error, SecureCounters, generate_keypair, generate_cert, format_elapsed_time_since, format_delay_time_until, format_interval_time_between, format_last_event_time_since, normalise_path, counter_modulus, min_blinded_counter_value, max_blinded_counter_value, min_tally_counter_value, max_tally_counter_value, add_counter_limits_to_config
+from util import log_error, SecureCounters, generate_keypair, generate_cert, format_elapsed_time_since, format_elapsed_time_since, format_delay_time_until, format_interval_time_between, format_last_event_time_since, normalise_path, counter_modulus, min_blinded_counter_value, max_blinded_counter_value, min_tally_counter_value, max_tally_counter_value, add_counter_limits_to_config, check_noise_weight_config
 
 import yaml
 
@@ -224,6 +224,9 @@ class TallyServer(ServerFactory):
             assert ts_conf['listen_port'] > 0
             assert ts_conf['sk_threshold'] > 0
             assert ts_conf['dc_threshold'] > 0
+            assert ts_conf.has_key('noise_weight')
+            assert check_noise_weight_config(ts_conf['noise_weight'],
+                                             ts_conf['dc_threshold'])
             assert ts_conf['collect_period'] > 0
             assert ts_conf['event_period'] > 0
             assert ts_conf['checkin_period'] > 0
@@ -270,7 +273,9 @@ class TallyServer(ServerFactory):
             time_since_checkin = now - c_status['alive']
 
             if time_since_checkin > 2 * self.get_checkin_period():
-                logging.warning("last checkin was {} for client {}".format(format_elapsed_time_since(time_since_checkin, 'at'), c_status))
+                logging.warning("last checkin was {} for client {}".format(
+                        format_elapsed_time_wait(time_since_checkin, 'at'),
+                        c_status))
 
             if time_since_checkin > 6 * self.get_checkin_period():
                 logging.warning("marking dead client {}".format(c_status))
@@ -343,21 +348,18 @@ class TallyServer(ServerFactory):
                 logging.debug("{} has stored state: {}: {}".format(uid, k, self.clients[uid][k]))
 
         # only data collectors have a fingerprint
-        # oldfingerprint is either:
-        #  - the previous fingerprint we had recorded for this client, or
-        #  - None
-        # fingerprint is either:
-        #  - the current fingerprint we've just received in the status, or
-        #  - the previous fingerprint we had recorded for this client, or
-        #  - None
-        # in that order.
+        # oldfingerprint is the previous fingerprint for this client (if any)
+        # fingerprint is the current fingerprint in the status (if any)
+        # If there is no fingerprint, these are None
         oldfingerprint = self.clients.get(uid, {}).get('fingerprint')
-        fingerprint = status.get('fingerprint', oldfingerprint)
+        fingerprint = status.get('fingerprint', None)
 
-        # complain if fingerprint changes
+        # complain if fingerprint changes, and keep the old one
         if (fingerprint is not None and oldfingerprint is not None and
             fingerprint != oldfingerprint):
-            logging.warning("fingerprint of {} {} state {} changed from {} to {}".format(status['type'], uid, status['state'], oldfingerprint, fingerprint))
+            logging.warning("Ignoring fingerprint update from {} {} state {}: kept old {} ignored new {}"
+                            .format(status['type'], uid, status['state'],
+                                    oldfingerprint, fingerprint))
 
         nickname = status.get('nickname', None)
         # uidname includes the nickname for data collectors
@@ -377,6 +379,9 @@ class TallyServer(ServerFactory):
         self.clients[uid].setdefault('time', status['alive'])
         if oldstate != self.clients[uid]['state']:
             self.clients[uid]['time'] = status['alive']
+        # always keep the old fingerprint
+        if oldfingerprint is not None:
+            self.clients[uid]['fingerprint'] = oldfingerprint
 
         last_event_time = status.get('last_event_time', None)
         last_event_message = ""
@@ -402,7 +407,16 @@ class TallyServer(ServerFactory):
         # so we'll wait and pass the client context to collection_phase just
         # before stopping it
 
-        self.collection_phase = CollectionPhase(self.config['collect_period'], self.config['counters'], sk_uids, sk_public_keys, dc_uids, counter_modulus(), clock_padding, self.config)
+        self.collection_phase = CollectionPhase(self.config['collect_period'],
+                                                self.config['counters'],
+                                                self.config['noise_weight'],
+                                                self.config['dc_threshold'],
+                                                sk_uids,
+                                                sk_public_keys,
+                                                dc_uids,
+                                                counter_modulus(),
+                                                clock_padding,
+                                                self.config)
         self.collection_phase.start()
 
     def stop_collection_phase(self):
@@ -452,10 +466,14 @@ class TallyServer(ServerFactory):
 
 class CollectionPhase(object):
 
-    def __init__(self, period, counters_config, sk_uids, sk_public_keys, dc_uids, modulus, clock_padding, tally_server_config):
+    def __init__(self, period, counters_config, noise_weight_config,
+                 dc_threshold_config, sk_uids, sk_public_keys, dc_uids,
+                 modulus, clock_padding, tally_server_config):
         # store configs
         self.period = period
         self.counters_config = counters_config
+        self.noise_weight_config = noise_weight_config
+        self.dc_threshold_config = dc_threshold_config
         self.sk_uids = sk_uids
         self.sk_public_keys = sk_public_keys
         self.dc_uids = dc_uids
@@ -618,6 +636,10 @@ class CollectionPhase(object):
         return self.starting_ts
 
     def get_start_config(self, client_uid):
+        '''
+        Get the starting DC or SK configuration.
+        Called by protocol via TallyServer.get_start_config()
+        '''
         if not self.is_participating(client_uid) or client_uid not in self.need_shares:
             return None
 
@@ -629,13 +651,25 @@ class CollectionPhase(object):
             for sk_uid in self.sk_public_keys:
                 config['sharekeepers'][sk_uid] = b64encode(self.sk_public_keys[sk_uid])
             config['counters'] = self.counters_config
+            config['noise_weight'] = self.noise_weight_config
+            config['dc_threshold'] = self.dc_threshold_config
             config['defer_time'] = self.clock_padding
-            logging.info("sending start comand with {} counters and requesting {} shares to data collector {}".format(len(config['counters']), len(config['sharekeepers']), client_uid))
+            logging.info("sending start comand with {} counters and requesting {} shares to data collector {}"
+                         .format(len(config['counters']),
+                                 len(config['sharekeepers']),
+                                 client_uid))
+            logging.debug("full data collector start config {}".format(config))
 
         elif self.state == 'starting_sks' and client_uid in self.sk_uids:
             config['shares'] = self.encrypted_shares[client_uid]
             config['counters'] = self.counters_config
-            logging.info("sending start command with {} counters and {} shares to share keeper {}".format(len(config['counters']), len(config['shares']), client_uid))
+            config['noise_weight'] = self.noise_weight_config
+            config['dc_threshold'] = self.dc_threshold_config
+            logging.info("sending start command with {} counters and {} shares to share keeper {}"
+                         .format(len(config['counters']),
+                                 len(config['shares']),
+                                 client_uid))
+            logging.debug("full share keeper start config {}".format(config))
 
         return config
 
@@ -728,18 +762,29 @@ class CollectionPhase(object):
             result_context.update(self.get_client_context_by_type())
 
         # now remove any context we are sure we don't want
-        # We don't need the paths from the configs
-        for uid in result_context.get('DataCollector', {}):
-            if 'state' in result_context['DataCollector'][uid].get('Config', {}):
-                del result_context['DataCollector'][uid]['Config']['state']
+        for dc in result_context.get('DataCollector', {}).values():
+            # We don't need the paths from the configs
+            if 'state' in dc.get('Config', {}):
+                dc['Config']['state'] = "(state path)"
+            # or the counters
+            if 'counters' in dc.get('Config', {}).get('Start',{}):
+                dc['Config']['Start']['counters'] = "(counters, no counts)"
+            # or the sk public keys
+            if 'sharekeepers' in dc.get('Config', {}).get('Start',{}):
+                for uid in dc['Config']['Start']['sharekeepers']:
+                    dc['Config']['Start']['sharekeepers'][uid] = "(public key)"
+
         # We don't want the public key in the ShareKeepers' statuses
-        for uid in result_context.get('ShareKeeper', {}):
-            if 'key' in result_context['ShareKeeper'][uid].get('Config', {}):
-                del result_context['ShareKeeper'][uid]['Config']['key']
-            if 'state' in result_context['ShareKeeper'][uid].get('Config', {}):
-                del result_context['ShareKeeper'][uid]['Config']['state']
-            if 'public_key' in result_context['ShareKeeper'][uid].get('Status', {}):
-                del result_context['ShareKeeper'][uid]['Status']['public_key']
+        for sk in result_context.get('ShareKeeper', {}).values():
+            if 'key' in sk.get('Config', {}):
+                sk['Config']['key'] = "(key path)"
+            if 'state' in sk.get('Config', {}):
+                sk['Config']['state'] = "(state path)"
+            if 'public_key' in sk.get('Status', {}):
+                sk['Status']['public_key'] = "(public key)"
+            # or the counters
+            if 'counters' in sk.get('Config', {}).get('Start',{}):
+                sk['Config']['Start']['counters'] = "(counters, no counts)"
 
         # add the status and config for the tally server itself
         result_context['TallyServer'] = {}
@@ -750,14 +795,14 @@ class CollectionPhase(object):
 
         # We don't need the paths from the configs
         if 'cert' in result_context['TallyServer']['Config']:
-            del result_context['TallyServer']['Config']['cert']
+            result_context['TallyServer']['Config']['cert'] = "(cert path)"
         if 'key' in result_context['TallyServer']['Config']:
-            del result_context['TallyServer']['Config']['key']
+            result_context['TallyServer']['Config']['key'] = "(key path)"
         if 'state' in result_context['TallyServer']['Config']:
-            del result_context['TallyServer']['Config']['state']
+            result_context['TallyServer']['Config']['state'] = "(state path)"
         # And we don't need the bins, they're duplicated in 'Tally'
         if 'counters' in result_context['TallyServer']['Config']:
-            del result_context['TallyServer']['Config']['counters']
+            result_context['TallyServer']['Config']['counters'] = "(counters, no counts)"
 
         return result_context
 

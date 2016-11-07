@@ -8,7 +8,7 @@ It also contains some unit tests that exercise various PrivCount subsystems.
 ## Prerequisites
 
 You should have followed the main README to setup and install PrivCount. You should have your
-PYTHONPATH setup properly so that you can call `privcount` without providing a full paths to it.
+PYTHONPATH setup properly so that you can call `privcount` without providing a full path to it.
 
 ## Running the test
 
@@ -29,6 +29,10 @@ For quick integration testing, reduce the collect_period to 2, and the event_per
 ### Manual testing
 
 #### Unit Tests
+
+Activate your python virtual environment (if you have one):
+
+    source ../venv/bin/activate
 
 Run the unit tests: (optional)
 

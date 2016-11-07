@@ -1,7 +1,8 @@
-import random, logging, json
+import logging, json
 
 from time import time
 from os import _exit
+from random import SystemRandom
 
 from twisted.internet import reactor
 from twisted.protocols.basic import LineOnlyReceiver
@@ -167,7 +168,7 @@ class PrivCountServerProtocol(PrivCountProtocol):
         '''
         initiate the handshake with the client
         '''
-        self.server_cookie = round(random.random(), 6)
+        self.server_cookie = round(SystemRandom().random(), 6)
         self.sendLine("HANDSHAKE1 {}".format(self.server_cookie))
 
     def handle_handshake_event(self, event_type, event_payload):
@@ -291,7 +292,7 @@ class PrivCountClientProtocol(PrivCountProtocol):
         if event_type == "HANDSHAKE1" and len(parts) == 1:
             is_valid = True
             self.server_cookie = float(parts[0])
-            self.client_cookie = round(random.random(), 6)
+            self.client_cookie = round(SystemRandom().random(), 6)
             password = round(self.client_cookie * self.server_cookie * PRIVCOUNT_HANDSHAKE_MAGIC, 6)
             self.sendLine("HANDSHAKE2 {} {}".format(self.client_cookie, password))
         elif event_type == "HANDSHAKE3" and len(parts) == 1:
