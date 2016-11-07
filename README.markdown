@@ -33,6 +33,10 @@ Optional graphing extensions (required only for the `plot` subcommand):
     system libs: libpng libpng-devel, #TODO this list is incomplete
     python libs: numpy, matplotlib
 
+Optional Tor consensus parsing tool:
+
+    python libs: numpy, stem
+
 System libs can be install with `apt-get`, `yum`, `brew`, etc. Python libs can be installed with `pip`, as we explain below.
 
 # installation
@@ -46,6 +50,8 @@ Run the following from the base directory of this package (i.e., the same locati
     pip install -r requirements.txt
     # if you want to use the optional privcount plot command
     pip install -r requirements-plot.txt
+    # if you want to use the optional compute_fractional_position_weights tool
+    pip install -r requirements-weights.txt
     pip install -I .
     test/run_test.sh -I . # run the unit tests to check your setup
     deactivate
