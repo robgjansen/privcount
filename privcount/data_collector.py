@@ -3,25 +3,28 @@ import logging
 import math
 import string
 import cPickle as pickle
+import yaml
 
 from time import time
 from copy import deepcopy
 from base64 import b64decode
 
-from protocol import PrivCountClientProtocol, TorControlClientProtocol
-from tally_server import log_tally_server_status
-from util import SecureCounters, TrafficModel, log_error, get_public_digest_string, load_public_key_string, encrypt, format_delay_time_wait, format_last_event_time_since, normalise_path, counter_modulus, add_counter_limits_to_config
-
-import yaml
-
 from twisted.internet import task, reactor, ssl
 from twisted.internet.protocol import ReconnectingClientFactory
+
+from privcount.counter import SecureCounters, counter_modulus, add_counter_limits_to_config, combine_counters
+from privcount.crypto import get_public_digest_string, load_public_key_string, encrypt
+from privcount.log import log_error, format_delay_time_wait, format_last_event_time_since
+from privcount.node import PrivCountClient
+from privcount.protocol import PrivCountClientProtocol, TorControlClientProtocol
+from privcount.traffic_model import TrafficModel
+from privcount.util import normalise_path, choose_secret_handshake_path
 
 # using reactor: pylint: disable=E1101
 # method docstring missing: pylint: disable=C0111
 # line too long: pylint: disable=C0301
 
-class DataCollector(ReconnectingClientFactory):
+class DataCollector(ReconnectingClientFactory, PrivCountClient):
     '''
     receive key share data from the DC message receiver
     keep the shares during collection epoch
@@ -29,37 +32,43 @@ class DataCollector(ReconnectingClientFactory):
     '''
 
     def __init__(self, config_filepath):
-        self.config_filepath = normalise_path(config_filepath)
-        self.config = None
+        PrivCountClient.__init__(self, config_filepath)
         self.aggregator = None
         self.aggregator_defer_id = None
         self.context = {}
 
     def buildProtocol(self, addr):
+        '''
+        Called by twisted
+        '''
         return PrivCountClientProtocol(self)
 
     def startFactory(self):
+        '''
+        Called by twisted
+        '''
         # TODO
         return
-        # load any state we may have from a previous run
-        state_filepath = normalise_path(self.config['state'])
-        if os.path.exists(state_filepath):
-            with open(state_filepath, 'r') as fin:
-                state = pickle.load(fin)
-                self.aggregator = state['aggregator']
-                self.aggregator_defer_id = state['aggregator_defer_id']
+        state = self.load_state()
+        if state is not None:
+            self.aggregator = state['aggregator']
+            self.aggregator_defer_id = state['aggregator_defer_id']
 
     def stopFactory(self):
+        '''
+        Called by twisted
+        '''
         # TODO
         return
-        state_filepath = normalise_path(self.config['state'])
         if self.aggregator is not None:
             # export everything that would be needed to survive an app restart
             state = {'aggregator': self.aggregator, 'aggregator_defer_id': self.aggregator_defer_id}
-            with open(state_filepath, 'w') as fout:
-                pickle.dump(state, fout)
+            self.dump_state(state)
 
     def run(self):
+        '''
+        Called by twisted
+        '''
         # load iniital config
         self.refresh_config()
         if self.config is None:
@@ -70,7 +79,11 @@ class DataCollector(ReconnectingClientFactory):
         self.do_checkin()
         reactor.run()
 
-    def get_status(self): # called by protocol
+    def get_status(self):
+        '''
+        Called by protocol
+        Returns a dictionary containing status information
+        '''
         status = {'type':'DataCollector', 'name':self.config['name'],
                   'state': 'active' if self.aggregator is not None else 'idle'}
         # store the latest context, so we have it even when the aggregator goes away
@@ -80,45 +93,46 @@ class DataCollector(ReconnectingClientFactory):
         status.update(self.context)
         return status
 
-    def set_server_status(self, status): # called by protocol
-        log_tally_server_status(status)
-
-    def do_checkin(self): # called by protocol
+    def do_checkin(self):
+        '''
+        Called by protocol
+        Refresh the config, and try to connect to the server
+        '''
+        # TODO: Refactor common client code - issue #121
         self.refresh_config()
-        # turn on reconnecting mode and reset backoff
-        self.resetDelay()
         ts_ip = self.config['tally_server_info']['ip']
         ts_port = self.config['tally_server_info']['port']
+        # turn on reconnecting mode and reset backoff
+        self.resetDelay()
         logging.info("checking in with TallyServer at {}:{}".format(ts_ip, ts_port))
         reactor.connectSSL(ts_ip, ts_port, self, ssl.ClientContextFactory()) # pylint: disable=E1101
 
-    def do_start(self, config): # called by protocol
+    def do_start(self, config):
         '''
-        start the node running
+        this is called by the protocol when we receive a command from the TS
+        to start a new collection phase
         return None if failure, otherwise json will encode result
         '''
-        if 'sharekeepers' not in config or 'counters' not in config:
+        # keep the start config to send to the TS at the end of the collection
+        # deepcopy in case we make any modifications later
+        self.start_config = deepcopy(config)
+
+        if ('sharekeepers' not in config):
+            logging.warning("start command from tally server cannot be completed due to missing sharekeepers")
             return None
-        # if we are still running from a previous incarnation, we need to stop first
+
+        dc_counters = self.check_start_config(config)
+
+        if dc_counters is None:
+            return None
+
+        # if we are still running from a previous incarnation, we need to stop
+        # first
         if self.aggregator is not None:
             return None
 
-        ts_counters, dc_counters = deepcopy(config['counters']), deepcopy(self.config['counters'])
-
-        # we keep our local config for which keys we are counting and the sigmas for noise
-        # we allow the tally server to update only the bin widths for each counter
-        for key in ts_counters:
-            if key in dc_counters and 'bins' in ts_counters[key]:
-                dc_counters[key]['bins'] = deepcopy(ts_counters[key]['bins'])
-
-        # we cant count keys for which we don't have configured bins
-        for key in dc_counters:
-            if 'bins' not in dc_counters[key]:
-                logging.warning("skipping counter '{}' because we do not have any bins configured".format(key))
-                dc_counters.pop(key, None)
-
-        # we require that only the configured share keepers be used in the collection phase
-        # because we must be able to encrypt messages to them
+        # we require that only the configured share keepers be used in the
+        # collection phase, because we must be able to encrypt messages to them
         expected_sk_digests = set()
         for digest in self.config['share_keepers']:
             expected_sk_digests.add(digest)
@@ -162,7 +176,8 @@ class DataCollector(ReconnectingClientFactory):
                 # XXX TODO FIXME these sigmas should not be 0
                 dc_counters[label] = {'bins': [[0.0, float("inf")]], 'sigma': 0.0}
 
-        self.aggregator = Aggregator(dc_counters, tmodel, config['sharekeepers'], self.config['noise_weight'], counter_modulus(), self.config['event_source'])
+        # The aggregator doesn't care about the DC threshold
+        self.aggregator = Aggregator(dc_counters, tmodel, config['sharekeepers'], config['noise_weight'], counter_modulus(), self.config['event_source'])
 
         defer_time = config['defer_time'] if 'defer_time' in config else 0.0
         logging.info("got start command from tally server, starting aggregator in {}".format(format_delay_time_wait(defer_time, 'at')))
@@ -174,10 +189,13 @@ class DataCollector(ReconnectingClientFactory):
         shares = self.aggregator.get_shares()
         # this is a dict {sk_uid : sk_msg} for each sk
         for sk_uid in shares:
+            # add the sender's name for debugging purposes
+            shares[sk_uid]['dc_name'] = self.config['name']
             # encrypt shares[sk_uid] for that sk
             pub_key_str = b64decode(config['sharekeepers'][sk_uid])
             sk_pub_key = load_public_key_string(pub_key_str)
             encrypted_secret = encrypt(sk_pub_key, shares[sk_uid]['secret'])
+            # TODO: secure delete
             shares[sk_uid]['secret'] = encrypted_secret
 
         logging.info("successfully started and generated {} blinding shares for {} counters".format(len(shares), len(dc_counters)))
@@ -187,41 +205,37 @@ class DataCollector(ReconnectingClientFactory):
         self.aggregator_defer_id = None
         self.aggregator.start()
 
-    def do_stop(self, config): # called by protocol
+    def do_stop(self, config):
         '''
+        called by protocol
+        the TS wants us to stop the current collection phase
+        they may or may not want us to send back our counters
         stop the node from running
-        return None if failure, otherwise json will encode result
+        return a dictionary containing counters (if available and wanted)
+        and the local and start configs
         '''
         logging.info("got command to stop collection phase")
-        if 'send_counters' not in config:
-            return None
 
-        wants_counters = 'send_counters' in config and config['send_counters'] is True
-        logging.info("tally server {} final counts".format("wants" if wants_counters else "does not want"))
-
-        response = {}
+        counts = None
         if self.aggregator_defer_id is not None:
             self.aggregator_defer_id.cancel()
             self.aggregator_defer_id = None
             assert self.aggregator is None
-
+            logging.info("Aggregator deferred, counts never started")
         elif self.aggregator is not None:
             counts = self.aggregator.stop()
             del self.aggregator
             self.aggregator = None
-            if wants_counters:
-                logging.info("sending counts from {} counters".format(len(counts)))
-                response['Counts'] = counts
+        else:
+            logging.info("No aggregator, counts never started")
 
-        logging.info("collection phase was stopped")
-        # even though the counter limits are hard-coded, include them anyway
-        response['Config'] = add_counter_limits_to_config(self.config)
-        return response
+        return self.check_stop_config(config, counts)
 
     def refresh_config(self):
         '''
         re-read config and process any changes
         '''
+        # TODO: refactor common code: see ticket #121
         try:
             logging.debug("reading config file from '%s'", self.config_filepath)
 
@@ -230,28 +244,28 @@ class DataCollector(ReconnectingClientFactory):
                 conf = yaml.load(fin)
             dc_conf = conf['data_collector']
 
-            if 'counters' in dc_conf:
-                dc_conf['counters'] = normalise_path(dc_conf['counters'])
-                assert os.path.exists(os.path.dirname(dc_conf['counters']))
-                with open(dc_conf['counters'], 'r') as fin:
-                    counters_conf = yaml.load(fin)
-                dc_conf['counters'] = counters_conf['counters']
-            else:
-                dc_conf['counters'] = conf['counters']
+            # find the path for the secret handshake file
+            dc_conf['secret_handshake'] = choose_secret_handshake_path(
+                dc_conf, conf)
 
+            # the state file
             dc_conf['state'] = normalise_path(dc_conf['state'])
             assert os.path.exists(os.path.dirname(dc_conf['state']))
 
+            dc_conf['delay_period'] = self.get_valid_delay_period(dc_conf)
+
+            dc_conf.setdefault('always_delay', False)
+            assert isinstance(dc_conf['always_delay'], bool)
+
+            dc_conf['sigma_decrease_tolerance'] = \
+                self.get_valid_sigma_decrease_tolerance(dc_conf)
+
             assert dc_conf['name'] != ''
-            assert dc_conf['noise_weight'] >= 0
             assert dc_conf['tally_server_info']['ip'] is not None
             assert dc_conf['tally_server_info']['port'] > 0
 
             assert dc_conf['event_source'] is not None
             assert dc_conf['event_source'] > 0
-
-            for key in dc_conf['counters']:
-                assert dc_conf['counters'][key]['sigma'] >= 0.0
 
             assert 'share_keepers' in dc_conf
 
@@ -284,11 +298,16 @@ class Aggregator(ReconnectingClientFactory):
     send results for tallying
     '''
 
-    def __init__(self, counters, traffic_model, sk_uids, noise_weight, param_q, tor_control_port):
+    def __init__(self, counters, traffic_model, sk_uids,
+                 noise_weight, modulus, tor_control_port):
+        self.secure_counters = SecureCounters(counters, modulus)
         self.traffic_model = traffic_model
-
-        self.secure_counters = SecureCounters(counters, param_q)
-        self.secure_counters.generate(sk_uids, noise_weight)
+        self.collection_counters = counters
+        # we can't generate the noise yet, because we don't know the
+        # DC fingerprint
+        self.secure_counters.generate_blinding_shares(sk_uids)
+        self.noise_weight_config = noise_weight
+        self.noise_weight_value = None
 
         self.connector = None
         self.protocol = None
@@ -312,6 +331,9 @@ class Aggregator(ReconnectingClientFactory):
 
     def buildProtocol(self, addr):
         self.protocol = TorControlClientProtocol(self)
+        # if we didn't build the protocol until after starting
+        if self.connector is not None:
+            self.protocol.startCollection(self.collection_counters)
         return self.protocol
 
     def startFactory(self):
@@ -326,27 +348,92 @@ class Aggregator(ReconnectingClientFactory):
         self.connector = reactor.connectTCP("127.0.0.1", self.tor_control_port, self)
         self.rotator = task.LoopingCall(self._do_rotate).start(600, now=False)
         self.cli_ips_rotated = time()
+        # if we've already built the protocol before starting
+        if self.protocol is not None:
+            self.protocol.startCollection(self.collection_counters)
 
-    def stop(self):
-        # dont try to reconnect
+    def _stop_protocol(self):
+        '''
+        Stop protocol and connection activities.
+        '''
+        # don't try to reconnect
         self.stopTrying()
 
         # stop reading from Tor control port
         if self.protocol is not None:
+            self.protocol.stopCollection()
             self.protocol.quit()
+            self.protocol = None
         if self.rotator is not None:
             self.rotator.cancel()
+            self.rotator = None
         if self.connector is not None:
             self.connector.disconnect()
+            self.connector = None
+
+    def _stop_secure_counters(self, counts_are_valid=True):
+        '''
+        If counts_are_valid, detach and return the counts from secure counters.
+        Otherwise, return None.
+        '''
+        # if we've already stopped counting due to an error, there are no
+        # counters
+        if self.secure_counters is None:
+            return None
 
         # return the final counts and make sure we cant be restarted
         counts = self.secure_counters.detach_counts()
+        # TODO: secure delete?
         del self.secure_counters
         self.secure_counters = None
-        return counts
+        if counts_are_valid:
+            return counts
+        else:
+            return None
+
+    def stop(self, counts_are_valid=True):
+        '''
+        Stop counting, and stop connecting to the ControlPort and Tally Server.
+        Retrieve the counts, and delete the counters.
+        If counts_are_valid is True, return the counts.
+        Otherwise, return None.
+        '''
+        # make sure we added noise
+        if self.noise_weight_value is None and counts_are_valid:
+            logging.warning("Noise was not added to counters when the control port connection was opened. Adding now.")
+            self.generate_noise()
+
+        # stop trying to collect data
+        self._stop_protocol()
+
+        # stop using the counters
+        return self._stop_secure_counters(counts_are_valid=counts_are_valid)
 
     def get_shares(self):
         return self.secure_counters.detach_blinding_shares()
+
+    def generate_noise(self):
+        '''
+        If self.fingerprint is included in the noise weight config from the
+        tally server, add noise to the counters based on the weight for that
+        fingerprint.
+        If not, stop participating in the round and delete all counters.
+        Must be called before detaching counters.
+        '''
+        if self.noise_weight_value is not None:
+            logging.warning("Asked to add noise twice. Ignoring.")
+            return
+
+        if (self.fingerprint is not None and
+            self.noise_weight_config.has_key(self.fingerprint)):
+            self.noise_weight_value = self.noise_weight_config[self.fingerprint]
+        else:
+            logging.warning("Tally Server did not provide a noise weight for our fingerprint {} in noise weight config {}, we will not count in this round."
+                            .format(self.fingerprint, self.noise_weight_config,
+                                    self.noise_weight_value))
+            # stop collecting and stop counting
+            self._stop_protocol()
+            self._stop_secure_counters(counts_are_valid=False)
 
     def set_nickname(self, nickname):
         nickname = nickname.strip()
@@ -486,6 +573,12 @@ class Aggregator(ReconnectingClientFactory):
         return self.address
 
     def set_fingerprint(self, fingerprint):
+        '''
+        If fingerprint is valid, set our stored fingerprint to fingerprint, and
+        return True.
+        Otherwise, return False.
+        Called by TorControlClientProtocol.
+        '''
         fingerprint = fingerprint.strip()
 
         # Do some basic validation of the fingerprint
@@ -496,18 +589,23 @@ class Aggregator(ReconnectingClientFactory):
             logging.warning("Bad fingerprint characters: %s", fingerprint)
             return False
 
-        # Are we replacing an existing fingerprint?
-        if self.fingerprint is not None:
+        # Is this the first time we've been told a fingerprint?
+        if self.fingerprint is None:
+            self.fingerprint = fingerprint
+            self.generate_noise()
+        else:
             if self.fingerprint != fingerprint:
-                logging.warning("Replacing fingerprint %s with %s", self.fingerprint, fingerprint)
+                logging.warning("Received different fingerprint %s, keeping original fingerprint %s",
+                                self.fingerprint, fingerprint)
             else:
                 logging.debug("Duplicate fingerprint received %s", fingerprint)
-
-        self.fingerprint = fingerprint
 
         return True
 
     def get_fingerprint(self):
+        '''
+        Return the stored fingerprint for this relay.
+        '''
         return self.fingerprint
 
     def get_context(self):
@@ -529,36 +627,39 @@ class Aggregator(ReconnectingClientFactory):
             context['fingerprint'] = self.get_fingerprint()
         if self.last_event_time != 0.0:
             context['last_event_time'] = self.last_event_time
+        if self.noise_weight_value is not None:
+            context['noise_weight_value'] = self.noise_weight_value
         return context
 
     def handle_event(self, event):
         if not self.secure_counters:
             return False
 
-        event_code, line_remaining = [v.strip() for v in event.split(' ', 1)]
+        # ignore empty events
+        if len(event) <= 1:
+            return False
+
+        event_code, items = event[0], event[1:]
         self.last_event_time = time()
 
         # hand valid events off to the aggregator
-        if event_code == 's':
-            # 's', ChanID, CircID, StreamID, ExitPort, ReadBW, WriteBW, TimeStart, TimeEnd, isDNS, isDir
-            items = [v.strip() for v in line_remaining.split(' ', 10)]
+        if event_code == 'PRIVCOUNT_STREAM_ENDED':
+            # 'PRIVCOUNT_STREAM_ENDED', ChanID, CircID, StreamID, ExitPort, ReadBW, WriteBW, TimeStart, TimeEnd, isDNS, isDir
             if len(items) == 10:
                 self._handle_stream_event(items[0:10])
 
-        elif event_code == 'c':
-            # 'c', ChanID, CircID, nCellsIn, nCellsOut, ReadBWDNS, WriteBWDNS, ReadBWExit, WriteBWExit, TimeStart, TimeEnd, PrevIP, prevIsClient, prevIsRelay, NextIP, nextIsClient, nextIsRelay
-            items = [v.strip() for v in line_remaining.split(' ', 16)]
+        elif event_code == 'PRIVCOUNT_CIRCUIT_ENDED':
+            # 'PRIVCOUNT_CIRCUIT_ENDED', ChanID, CircID, nCellsIn, nCellsOut, ReadBWDNS, WriteBWDNS, ReadBWExit, WriteBWExit, TimeStart, TimeEnd, PrevIP, prevIsClient, prevIsRelay, NextIP, nextIsClient, nextIsRelay
             if len(items) == 16:
                 self._handle_circuit_event(items[0:16])
 
-        elif event_code == 't':
-            # 't', ChanID, TimeStart, TimeEnd, IP, isClient, isRelay
-            items = [v.strip() for v in line_remaining.split(' ', 6)]
+        elif event_code == 'PRIVCOUNT_CONNECTION_ENDED':
+            # 'PRIVCOUNT_CONNECTION_ENDED', ChanID, TimeStart, TimeEnd, IP, isClient, isRelay
             if len(items) == 6:
                 self._handle_connection_event(items[0:6])
 
-        elif event_code == 'b':
-            # 'b', ChanID, CircID, StreamID, BW, Direction, Time
+        elif event_code == 'PRIVCOUNT_STREAM_BYTES_TRANSFERRED':
+            # 'PRIVCOUNT_STREAM_BYTES_TRANSFERRED', ChanID, CircID, StreamID, BW, Direction, Time
             items = [v.strip() for v in line_remaining.split(' ', 6)]
             if len(items) == 6:
                 self._handle_bytes_event(items[0:6])
@@ -803,6 +904,7 @@ class Aggregator(ReconnectingClientFactory):
         elif not nextIsRelay:
             # prev hop is known relay but next is not, we are exit
             self.secure_counters.increment("CircuitsAll", 1)
+            self.secure_counters.increment("CircuitLifeTimeAll", end - start)
 
             # check if we have any stream info in this circuit
             circ_is_known, has_completed_stream = False, False
@@ -814,7 +916,7 @@ class Aggregator(ReconnectingClientFactory):
             if circ_is_known and has_completed_stream:
                 # we have circuit info and at least one stream ended on it
                 self.secure_counters.increment("CircuitsActive", 1)
-                self.secure_counters.increment("CircuitLifeTime", end - start)
+                self.secure_counters.increment("CircuitLifeTimeActive", end - start)
 
                 # convenience
                 counts = self.circ_info[chanid][circid]['num_streams']
@@ -850,6 +952,7 @@ class Aggregator(ReconnectingClientFactory):
             else:
                 # either we dont know circ, or no streams ended on it
                 self.secure_counters.increment("CircuitsInactive", 1)
+                self.secure_counters.increment("CircuitLifeTimeInactive", end - start)
 
             # cleanup
             if circ_is_known:

@@ -14,4 +14,8 @@ setup(name='PrivCount',
       author='Rob Jansen',
       packages=['privcount'],
       scripts=['privcount/tools/privcount'],
+      # allow other packages to depend on "privcount [plot]"
+      extras_require={
+        'plot':  ['matplotlib', 'numpy']
+      }
      )

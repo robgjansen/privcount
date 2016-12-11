@@ -1,0 +1,8 @@
+# Requirements for privcount's optional compute_fractional_position_weights tool
+
+# PrivCount uses >= to download the latest package versions
+# This is particularly important for (non-backported) security fixes
+
+# Listed versions worked with privcount when the dependency was added
+numpy>=1.11.2
+stem>=1.4.0

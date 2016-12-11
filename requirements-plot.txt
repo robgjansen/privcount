@@ -1,0 +1,8 @@
+# Requirements for privcount's optional plot command
+
+# PrivCount uses >= to download the latest package versions
+# This is particularly important for (non-backported) security fixes
+
+# Listed versions worked with privcount when the dependency was added
+matplotlib>=1.5.3
+numpy>=1.11.2

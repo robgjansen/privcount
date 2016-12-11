@@ -4,23 +4,45 @@ tally_server:
     counters: './counters.bins.yaml' # path to a yaml file containing our counter bin configurations
     # traffic model is optional - only use if we want to enable traffic model learning
     traffic_model: 'traffic.model.json' # path to the traffic model, if we want to learn
+    # Either noise or sigmas must be provided (if noise is present, sigmas is ignored)
+    noise: './counters.noise.yaml' # path to a yaml file containing noise allocation parameters
+    #sigmas: './counters.sigmas.yaml' # path to a yaml file containing pre-calculated sigmas
+    # path to a yaml file where the noise allocation is written immediately after calculation. The noise allocation also forms part of the results context.
+    allocation: './counters.allocation.yaml'
+    noise_weight: # distribute noise among all machines / data collectors
+        # The tor relay fingerprints must be quoted, as some start with 0-9
+        # This is the fingerprint from the test data collector
+        # Comment it out to test the missing fingerprint failure case
+        'FACADE0000000000000000000123456789ABCDEF': 1.0
+        # This fingerprint is not present on the test data collector,
+        # it should be ignored
+        '3DEADBEEF012345678900000000000000DEADC00': 1.0
     listen_port: 20001 # open port on which to listen for remote connections from TKSes
     sk_threshold: 1 # number of share keeper nodes required before starting
     dc_threshold: 1 # number of data collector nodes required before starting
     # The elapsed test time is approximately:
     #     collect_period + 2*event_period
-    collect_period: 30 # (no default, 1 week = 604800 seconds) the safe time frame of stats collection for all stats
+    collect_period: 4 # (no default, 1 week = 604800 seconds) the safe time frame of stats collection for all stats
     # There must be at least two event periods in each collect period
-    event_period: 15 # (default: 60 seconds) how often the TS event loop runs
+    event_period: 2 # (default: 60 seconds) how often the TS event loop runs
     # There must be at least two checkin periods in each collect period
     # The checking period should also be less than or equal to the event
     # period, unless you are willing to wait a while for client status updates
-    checkin_period: 5 # (default: 60 seconds) number of seconds clients should wait before checking with TS for updates
-    continue: False # start another collection phase after finishing a previous
+    checkin_period: 2 # (default: 60 seconds) number of seconds clients should wait before checking with TS for updates
+    delay_period: 0 # (default: 1 day = 86400 seconds) the number of seconds of enforced delay between rounds that change noise allocations. User activity shorter than this period is protected under differential privacy.
+    always_delay: True # (default: False) always enforce the delay period between collection rounds, regardless of whether the noise allocation has changed. Intended for use when testing.
+    #sigma_decrease_tolerance: 1.0e-6 # (default: 1.0e-6) the sigma value decrease that the node will tolerate before enforcing a delay
+    continue: 2 # start another collection phase after finishing a previous collection phase. If this value is an integer, run that many rounds before stopping. (The TS always runs at least 1 round.)
     # optional overrides:
     key: 'keys/ts.pem' # path to the rsa private key
     cert: 'keys/ts.cert' # path to the public key certificate
     #results: './' # path to directory where the result files will be written
+    #
+    # the security of each PrivCount deployment depends on the handshake key
+    # being unique, random, and secret
+    # all nodes must agree on this key to handshake correctly
+    # if the key file does not exist, the TS creates a file with a random key
+    secret_handshake: 'keys/secret_handshake.yaml'
 
 # only the share keepers need these
 share_keeper:
@@ -30,16 +52,25 @@ share_keeper:
         port: 20001
     # optional overrides:
     key: 'keys/sk.pem' # path to the rsa private key
+    delay_period: 2 # (default: 1 day = 86400 seconds) the number of seconds of enforced delay between rounds that change noise allocations. User activity shorter than this period is protected under differential privacy.
+    always_delay: True # (default: False) always enforce the delay period between collection rounds, regardless of whether the noise allocation has changed. Intended for use when testing.
+    sigma_decrease_tolerance: 1.0e-6 # (default: 1.0e-6) the sigma value decrease that the node will tolerate before enforcing a delay
+    # all nodes must agree on this key to handshake correctly
+    secret_handshake: 'keys/secret_handshake.yaml'
 
 # only the data collectors need these
 data_collector:
     name: phantomtrain1 # a unique, human meaningful name for debugging
     state: 'privcount.dc.state' # path to file where persistent state will be stored
-    counters: './counters.noise.yaml' # path to a yaml file containing our counter noise configurations
     event_source: 20003 # the Tor control port from which we will receive events
-    noise_weight: 1.0 # distribute noise among all machines / data collectors
     tally_server_info: # where the tally server is located
         ip: 127.0.0.1
         port: 20001
     share_keepers: # share keepers' public key hashes (`openssl rsa -pubout < keys/sk.pem | sha256sum`)
         - 'e79ea9173e28e6a54f6d2ec6494c1723a330811652acebbe8d98098ce347d679'
+    # optional overrides:
+    #delay_period: 4 # (default: 1 day = 86400 seconds) the number of seconds of enforced delay between rounds that change noise allocations. User activity shorter than this period is protected under differential privacy.
+    #always_delay: True # (default: False) always enforce the delay period between collection rounds, regardless of whether the noise allocation has changed. Intended for use when testing.
+    #sigma_decrease_tolerance: 1.0e-6 # (default: 1.0e-6) the sigma value decrease that the node will tolerate before enforcing a delay
+    # all nodes must agree on this key to handshake correctly
+    secret_handshake: 'keys/secret_handshake.yaml'

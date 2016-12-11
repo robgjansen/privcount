@@ -7,6 +7,7 @@ import os
 import json
 import logging
 import cPickle as pickle
+import yaml
 
 from time import time
 from copy import deepcopy
@@ -15,42 +16,19 @@ from base64 import b64encode
 from twisted.internet import reactor, task, ssl
 from twisted.internet.protocol import ServerFactory
 
-from protocol import PrivCountServerProtocol
-from util import log_error, SecureCounters, TrafficModel, generate_keypair, generate_cert, format_elapsed_time_since, format_delay_time_until, format_interval_time_between, format_last_event_time_since, normalise_path, counter_modulus, min_blinded_counter_value, max_blinded_counter_value, min_tally_counter_value, max_tally_counter_value, add_counter_limits_to_config
-
-import yaml
+from privcount.counter import SecureCounters, counter_modulus, min_blinded_counter_value, max_blinded_counter_value, min_tally_counter_value, max_tally_counter_value, add_counter_limits_to_config, check_noise_weight_config, check_counters_config, CollectionDelay, float_accuracy
+from privcount.crypto import generate_keypair, generate_cert
+from privcount.log import log_error, format_elapsed_time_since, format_elapsed_time_wait, format_delay_time_until, format_interval_time_between, format_last_event_time_since
+from privcount.node import PrivCountServer, continue_collecting, log_tally_server_status
+from privcount.protocol import PrivCountServerProtocol
+from privcount.statistics_noise import get_noise_allocation
+from privcount.traffic_model import TrafficModel
+from privcount.util import normalise_path, choose_secret_handshake_path
 
 # for warning about logging function and format # pylint: disable=W1202
 # for calling methods on reactor # pylint: disable=E1101
 
-def log_tally_server_status(status):
-    '''
-    clients must only use the expected end time for logging: the tally
-    server may end the round early, or extend it slightly to allow for
-    network round trip times
-    '''
-
-    # until the collection round starts, the tally server doesn't know when it
-    # is expected to end
-    expected_end_msg = ""
-    if 'expected_end_time' in status:
-        stopping_ts = status['expected_end_time']
-        # we're waiting for the collection to stop
-        if stopping_ts > time():
-            expected_end_msg = ", expect collection to end in {}".format(format_delay_time_until(stopping_ts, 'at'))
-        # we expect the collection to have stopped, and the TS should be
-        # collecting results
-        else:
-            expected_end_msg = ", expect collection has ended for {}".format(format_elapsed_time_since(stopping_ts, 'since'))
-    logging.info("--server status: PrivCount is {} for {}{}".format(status['state'], format_elapsed_time_since(status['time'], 'since'), expected_end_msg))
-    t, r = status['dcs_total'], status['dcs_required']
-    a, i = status['dcs_active'], status['dcs_idle']
-    logging.info("--server status: DataCollectors: have {}, need {}, {}/{} active, {}/{} idle".format(t, r, a, t, i, t))
-    t, r = status['sks_total'], status['sks_required']
-    a, i = status['sks_active'], status['sks_idle']
-    logging.info("--server status: ShareKeepers: have {}, need {}, {}/{} active, {}/{} idle".format(t, r, a, t, i, t))
-
-class TallyServer(ServerFactory):
+class TallyServer(ServerFactory, PrivCountServer):
     '''
     receive blinded counts from the DCs
     receive key shares from the SKs
@@ -59,42 +37,46 @@ class TallyServer(ServerFactory):
     '''
 
     def __init__(self, config_filepath):
-        self.config_filepath = normalise_path(config_filepath)
-        self.config = None
+        PrivCountServer.__init__(self, config_filepath)
         self.clients = {}
         self.collection_phase = None
         self.idle_time = time()
         self.num_completed_collection_phases = 0
 
     def buildProtocol(self, addr):
+        '''
+        Called by twisted
+        '''
         return PrivCountServerProtocol(self)
 
     def startFactory(self):
+        '''
+        Called by twisted
+        '''
         # TODO
         return
-        # load any state we may have from a previous run
-        state_filepath = normalise_path(self.config['state'])
-        if os.path.exists(state_filepath):
-            with open(state_filepath, 'r') as fin:
-                state = pickle.load(fin)
-                self.clients = state['clients']
-                self.collection_phase = state['collection_phase']
-                self.idle_time = state['idle_time']
+        state = self.load_state()
+        if state is not None:
+            self.clients = state['clients']
+            self.collection_phase = state['collection_phase']
+            self.idle_time = state['idle_time']
 
     def stopFactory(self):
         # TODO
         return
-        state_filepath = normalise_path(self.config['state'])
         if self.collection_phase is not None or len(self.clients) > 0:
             # export everything that would be needed to survive an app restart
             state = {'clients': self.clients, 'collection_phase': self.collection_phase, 'idle_time': self.idle_time}
-            with open(state_filepath, 'w') as fout:
-                pickle.dump(state, fout)
+            self.dump_state(state)
 
     def run(self):
+        '''
+        Called by twisted
+        '''
         # load initial config
         self.refresh_config()
         if self.config is None:
+            logging.critical("cannot start due to error in config file")
             return
 
         # refresh and check status every event_period seconds
@@ -112,6 +94,11 @@ class TallyServer(ServerFactory):
         reactor.run()
 
     def refresh_loop(self):
+        '''
+        Perform the TS event loop:
+        Refresh the config, check clients, check if we want to start or stop
+        collecting, and log a status update.
+        '''
         # make sure we have the latest config and counters
         self.refresh_config()
 
@@ -121,11 +108,20 @@ class TallyServer(ServerFactory):
         # check if we should start the next collection phase
         if self.collection_phase is None:
             num_phases = self.num_completed_collection_phases
-            if num_phases == 0 or self.config['continue']:
+            if continue_collecting(num_phases,
+                                   self.config['continue']):
                 dcs, sks = self.get_idle_dcs(), self.get_idle_sks()
                 if len(dcs) >= self.config['dc_threshold'] and len(sks) >= self.config['sk_threshold']:
-                    logging.info("starting collection phase {} with {} DataCollectors and {} ShareKeepers".format((num_phases+1), len(dcs), len(sks)))
-                    self.start_new_collection_phase(dcs, sks)
+                    if self.collection_delay.round_start_permitted(
+                            self.config['noise'],
+                            time(),
+                            self.config['delay_period'],
+                            self.config['always_delay'],
+                            self.config['sigma_decrease_tolerance']):
+                        # we've passed all the checks, start the collection
+                        num_phases = self.num_completed_collection_phases
+                        logging.info("starting collection phase {} with {} DataCollectors and {} ShareKeepers".format((num_phases+1), len(dcs), len(sks)))
+                        self.start_new_collection_phase(dcs, sks)
 
         # check if we should stop a running collection phase
         else:
@@ -146,6 +142,7 @@ class TallyServer(ServerFactory):
         '''
         re-read config and process any changes
         '''
+        # TODO: refactor common code: see ticket #121
         try:
             logging.debug("reading config file from '%s'", self.config_filepath)
 
@@ -154,35 +151,104 @@ class TallyServer(ServerFactory):
                 conf = yaml.load(fin)
             ts_conf = conf['tally_server']
 
+            # find the path for the secret handshake file
+            ts_conf['secret_handshake'] = choose_secret_handshake_path(
+                ts_conf, conf)
+            # check we can load the secret handshake file, creating if needed
+            # (but ignore the actual secret, it never forms part of our config)
+            # we can't use PrivCountProtocol.handshake_secret(), because
+            # our own self.config is either None or outdated at this point
+            assert PrivCountServerProtocol.handshake_secret_load(
+                ts_conf['secret_handshake'],
+                create=True)
+
+            # the counter bin file
             if 'counters' in ts_conf:
                 ts_conf['counters'] = normalise_path(ts_conf['counters'])
-                assert os.path.exists(os.path.dirname(ts_conf['counters']))
+                assert os.path.exists(ts_conf['counters'])
                 with open(ts_conf['counters'], 'r') as fin:
                     counters_conf = yaml.load(fin)
                 ts_conf['counters'] = counters_conf['counters']
             else:
                 ts_conf['counters'] = conf['counters']
 
-            # if key path is not specified, look at default path, or generate a new key
+            # the counter noise config - one of the following must be provided:
+            # noise: contains the noise allocation parameters,
+            # sigmas: contains pre-calculated sigmas
+            # (if both are provided, sigmas is ignored)
+            # noise file
+            if 'noise' in ts_conf:
+                ts_conf['noise'] = normalise_path(ts_conf['noise'])
+                assert os.path.exists(ts_conf['noise'])
+                with open(ts_conf['noise'], 'r') as fin:
+                    noise_conf = yaml.load(fin)
+                # use both the privacy and counters elements from noise_conf
+                ts_conf['noise'] = {}
+                ts_conf['noise']['privacy'] = noise_conf['privacy']
+                ts_conf['noise']['counters'] = noise_conf['counters']
+            # noise config in the same file
+            elif 'privacy' in conf and 'counters' in conf:
+                ts_conf['noise'] = {}
+                ts_conf['noise']['privacy'] = conf['privacy']
+                ts_conf['noise']['counters'] = conf['counters']
+            # sigmas file
+            elif 'sigmas' in ts_conf:
+                ts_conf['sigmas'] = normalise_path(ts_conf['sigmas'])
+                assert os.path.exists(ts_conf['sigmas'])
+                with open(ts_conf['sigmas'], 'r') as fin:
+                    sigmas_conf = yaml.load(fin)
+                ts_conf['noise'] = {}
+                ts_conf['noise']['counters'] = sigmas_conf['counters']
+                # we've packed it into ts_conf['noise'], so remove it
+                del ts_conf['sigmas']
+            # sigmas config in the same file
+            else:
+                ts_conf['noise'] = {}
+                ts_conf['noise']['counters'] = conf['counters']
+
+            # an optional noise allocation results file
+            if 'allocation' in ts_conf:
+                ts_conf['allocation'] = normalise_path(ts_conf['allocation'])
+                assert os.path.exists(os.path.dirname(ts_conf['allocation']))
+
+            # now all the files are loaded, use noise to calculate sigmas
+            # (if noise was configured)
+            if 'privacy' in ts_conf['noise']:
+                ts_conf['noise'] = get_noise_allocation(ts_conf['noise'])
+                # and write it to the specified file (if configured)
+                if 'allocation' in ts_conf:
+                    with open(ts_conf['allocation'], 'w') as fout:
+                        yaml.dump(ts_conf['noise'], fout,
+                                  default_flow_style=False)
+
+            # now we have bins and sigmas (and perhaps additional calculation
+            # info along with the sigmas)
+            # perform sanity checks
+            assert check_counters_config(ts_conf['counters'],
+                                         ts_conf['noise']['counters'])
+
+            # a private/public key pair and a cert containing the public key
+            # if either path is not specified, use the default path
             if 'key' in ts_conf and 'cert' in ts_conf:
                 ts_conf['key'] = normalise_path(ts_conf['key'])
-                assert os.path.exists(ts_conf['key'])
-
                 ts_conf['cert'] = normalise_path(ts_conf['cert'])
-                assert os.path.exists(ts_conf['cert'])
             else:
                 ts_conf['key'] = normalise_path('privcount.rsa_key.pem')
                 ts_conf['cert'] = normalise_path('privcount.rsa_key.cert')
-                if not os.path.exists(ts_conf['key']) or not os.path.exists(ts_conf['cert']):
-                    generate_keypair(ts_conf['key'])
-                    generate_cert(ts_conf['key'], ts_conf['cert'])
+            # generate a new key and cert if either file does not exist
+            if (not os.path.exists(ts_conf['key']) or
+                not os.path.exists(ts_conf['cert'])):
+                generate_keypair(ts_conf['key'])
+                generate_cert(ts_conf['key'], ts_conf['cert'])
 
+            # a directory for results files
             if 'results' in ts_conf:
                 ts_conf['results'] = normalise_path(ts_conf['results'])
             else:
                 ts_conf['results'] = normalise_path('./')
-            assert os.path.exists(os.path.dirname(ts_conf['results']))
+            assert os.path.exists(ts_conf['results'])
 
+            # if we are counting a traffic model, import the model from file
             if 'traffic_model' in ts_conf:
                 ts_conf['traffic_model'] = normalise_path(ts_conf['traffic_model'])
                 assert os.path.exists(os.path.dirname(ts_conf['traffic_model']))
@@ -195,6 +261,7 @@ class TallyServer(ServerFactory):
                 assert 'transition_probability' in model
                 assert 'emission_probability' in model
 
+            # the state file
             ts_conf['state'] = normalise_path(ts_conf['state'])
             assert os.path.exists(os.path.dirname(ts_conf['state']))
 
@@ -233,13 +300,25 @@ class TallyServer(ServerFactory):
                              ts_conf['checkin_period'],
                              ts_conf['event_period'])
 
+            ts_conf['delay_period'] = self.get_valid_delay_period(ts_conf)
+
+            ts_conf.setdefault('always_delay', False)
+            assert isinstance(ts_conf['always_delay'], bool)
+
+            ts_conf['sigma_decrease_tolerance'] = \
+                self.get_valid_sigma_decrease_tolerance(ts_conf)
+
             assert ts_conf['listen_port'] > 0
             assert ts_conf['sk_threshold'] > 0
             assert ts_conf['dc_threshold'] > 0
+            assert ts_conf.has_key('noise_weight')
+            assert check_noise_weight_config(ts_conf['noise_weight'],
+                                             ts_conf['dc_threshold'])
             assert ts_conf['collect_period'] > 0
             assert ts_conf['event_period'] > 0
             assert ts_conf['checkin_period'] > 0
-            assert ts_conf['continue'] == True or ts_conf['continue'] == False
+            assert (isinstance(ts_conf['continue'], bool) or
+                    ts_conf['continue'] >= 0)
             # check the hard-coded counter values are sane
             assert counter_modulus() > 0
             assert min_blinded_counter_value() == 0
@@ -282,7 +361,9 @@ class TallyServer(ServerFactory):
             time_since_checkin = now - c_status['alive']
 
             if time_since_checkin > 2 * self.get_checkin_period():
-                logging.warning("last checkin was {} for client {}".format(format_elapsed_time_since(time_since_checkin, 'at'), c_status))
+                logging.warning("last checkin was {} for client {}".format(
+                        format_elapsed_time_wait(time_since_checkin, 'at'),
+                        c_status))
 
             if time_since_checkin > 6 * self.get_checkin_period():
                 logging.warning("marking dead client {}".format(c_status))
@@ -335,7 +416,14 @@ class TallyServer(ServerFactory):
             'sks_idle' : sk_idle,
             'sks_active' : sk_active,
             'sks_total' : sk_idle+sk_active,
-            'sks_required' : self.config['sk_threshold']
+            'sks_required' : self.config['sk_threshold'],
+            'completed_phases' : self.num_completed_collection_phases,
+            'continue' : self.config['continue'],
+            'delay_until' : self.collection_delay.get_next_round_start_time(
+                self.config['noise'],
+                self.config['delay_period'],
+                self.config['always_delay'],
+                self.config['sigma_decrease_tolerance'])
         }
 
         # we can't know the expected end time until we have started
@@ -355,21 +443,18 @@ class TallyServer(ServerFactory):
                 logging.debug("{} has stored state: {}: {}".format(uid, k, self.clients[uid][k]))
 
         # only data collectors have a fingerprint
-        # oldfingerprint is either:
-        #  - the previous fingerprint we had recorded for this client, or
-        #  - None
-        # fingerprint is either:
-        #  - the current fingerprint we've just received in the status, or
-        #  - the previous fingerprint we had recorded for this client, or
-        #  - None
-        # in that order.
+        # oldfingerprint is the previous fingerprint for this client (if any)
+        # fingerprint is the current fingerprint in the status (if any)
+        # If there is no fingerprint, these are None
         oldfingerprint = self.clients.get(uid, {}).get('fingerprint')
-        fingerprint = status.get('fingerprint', oldfingerprint)
+        fingerprint = status.get('fingerprint', None)
 
-        # complain if fingerprint changes
+        # complain if fingerprint changes, and keep the old one
         if (fingerprint is not None and oldfingerprint is not None and
             fingerprint != oldfingerprint):
-            logging.warning("fingerprint of {} {} state {} changed from {} to {}".format(status['type'], uid, status['state'], oldfingerprint, fingerprint))
+            logging.warning("Ignoring fingerprint update from {} {} state {}: kept old {} ignored new {}"
+                            .format(status['type'], uid, status['state'],
+                                    oldfingerprint, fingerprint))
 
         nickname = status.get('nickname', None)
         # uidname includes the nickname for data collectors
@@ -389,6 +474,9 @@ class TallyServer(ServerFactory):
         self.clients[uid].setdefault('time', status['alive'])
         if oldstate != self.clients[uid]['state']:
             self.clients[uid]['time'] = status['alive']
+        # always keep the old fingerprint
+        if oldfingerprint is not None:
+            self.clients[uid]['fingerprint'] = oldfingerprint
 
         last_event_time = status.get('last_event_time', None)
         last_event_message = ""
@@ -427,7 +515,18 @@ class TallyServer(ServerFactory):
         # so we'll wait and pass the client context to collection_phase just
         # before stopping it
 
-        self.collection_phase = CollectionPhase(self.config['collect_period'], counters, model, sk_uids, sk_public_keys, dc_uids, counter_modulus(), clock_padding, self.config)
+        self.collection_phase = CollectionPhase(self.config['collect_period'],
+                                                counters,
+                                                model,
+                                                self.config['noise'],
+                                                self.config['noise_weight'],
+                                                self.config['dc_threshold'],
+                                                sk_uids,
+                                                sk_public_keys,
+                                                dc_uids,
+                                                counter_modulus(),
+                                                clock_padding,
+                                                self.config)
         self.collection_phase.start()
 
     def stop_collection_phase(self):
@@ -436,8 +535,29 @@ class TallyServer(ServerFactory):
         self.collection_phase.set_tally_server_status(self.get_status())
         self.collection_phase.stop()
         if self.collection_phase.is_stopped():
+            # we want the end time after all clients have definitely stopped
+            # and returned their results, not the time the TS told the
+            # CollectionPhase to initiate the stop procedure
+            # (otherwise, a lost message or down client could delay stopping
+            # for a pathological period of time, breaking our assumptions)
+            # This also means that the SKs will allow the round to start
+            # slightly before the TS allows it, which is a good thing.
+            end_time = time()
             self.num_completed_collection_phases += 1
-            self.collection_phase.write_results(self.config['results'])
+            self.collection_phase.write_results(self.config['results'],
+                                                end_time)
+            self.collection_delay.set_stop_result(
+                not self.collection_phase.is_error(),
+                # we can't use config['noise'], because it might have changed
+                # since the start of the round
+                self.collection_phase.get_noise_config(),
+                self.collection_phase.get_start_ts(),
+                end_time,
+                # if config['delay_period'] has changed, we use it, and warn
+                # if it would have made a difference
+                self.config['delay_period'],
+                self.config['always_delay'],
+                self.config['sigma_decrease_tolerance'])
             self.collection_phase = None
             self.idle_time = time()
 
@@ -477,11 +597,18 @@ class TallyServer(ServerFactory):
 
 class CollectionPhase(object):
 
-    def __init__(self, period, counters_config, traffic_model, sk_uids, sk_public_keys, dc_uids, modulus, clock_padding, tally_server_config):
+    def __init__(self, period, counters_config, traffic_model, noise_config,
+                 noise_weight_config, dc_threshold_config, sk_uids,
+                 sk_public_keys, dc_uids, modulus, clock_padding,
+                 tally_server_config):
         # store configs
         self.period = period
+        # the counter bins
         self.counters_config = counters_config
         self.traffic_model = traffic_model
+        self.noise_config = noise_config
+        self.noise_weight_config = noise_weight_config
+        self.dc_threshold_config = dc_threshold_config
         self.sk_uids = sk_uids
         self.sk_public_keys = sk_public_keys
         self.dc_uids = dc_uids
@@ -570,6 +697,8 @@ class CollectionPhase(object):
 
     def store_data(self, client_uid, data):
         if data == None:
+            # this can happen if the SK (or DC) is enforcing a delay because
+            # the noise allocation has changed
             logging.warning("received error response from {} while in state {}".format(client_uid, self.state))
             return
 
@@ -640,10 +769,17 @@ class CollectionPhase(object):
     def is_stopped(self):
         return True if self.state == 'stopped' else False
 
+    def get_noise_config(self):
+        return self.noise_config
+
     def get_start_ts(self):
         return self.starting_ts
 
     def get_start_config(self, client_uid):
+        '''
+        Get the starting DC or SK configuration.
+        Called by protocol via TallyServer.get_start_config()
+        '''
         if not self.is_participating(client_uid) or client_uid not in self.need_shares:
             return None
 
@@ -655,15 +791,31 @@ class CollectionPhase(object):
             for sk_uid in self.sk_public_keys:
                 config['sharekeepers'][sk_uid] = b64encode(self.sk_public_keys[sk_uid])
             config['counters'] = self.counters_config
+            config['noise'] = self.noise_config
+            config['noise_weight'] = self.noise_weight_config
+            config['dc_threshold'] = self.dc_threshold_config
             config['defer_time'] = self.clock_padding
             if self.traffic_model is not None:
                 config['traffic_model'] = self.traffic_model
-            logging.info("sending start comand with {} counters and requesting {} shares to data collector {}".format(len(config['counters']), len(config['sharekeepers']), client_uid))
+            config['collect_period'] = self.period
+            logging.info("sending start comand with {} counters and requesting {} shares to data collector {}"
+                         .format(len(config['counters']),
+                                 len(config['sharekeepers']),
+                                 client_uid))
+            logging.debug("full data collector start config {}".format(config))
 
         elif self.state == 'starting_sks' and client_uid in self.sk_uids:
             config['shares'] = self.encrypted_shares[client_uid]
             config['counters'] = self.counters_config
-            logging.info("sending start command with {} counters and {} shares to share keeper {}".format(len(config['counters']), len(config['shares']), client_uid))
+            config['noise'] = self.noise_config
+            config['noise_weight'] = self.noise_weight_config
+            config['dc_threshold'] = self.dc_threshold_config
+            config['collect_period'] = self.period
+            logging.info("sending start command with {} counters and {} shares to share keeper {}"
+                         .format(len(config['counters']),
+                                 len(config['shares']),
+                                 client_uid))
+            logging.debug("full share keeper start config {}".format(config))
 
         return config
 
@@ -729,7 +881,7 @@ class CollectionPhase(object):
                         contexts[type][uid]['Config'] = self.client_config[uid]
         return contexts
 
-    def get_result_context(self):
+    def get_result_context(self, end_time):
         '''
         the context is written out with the tally results
         '''
@@ -740,7 +892,11 @@ class CollectionPhase(object):
         # Do we want to round these times?
         # (That is, use begin and end instead?)
         result_time['Start'] = self.starting_ts
-        result_time['Stop'] = self.stopping_ts
+        result_time['Stopping'] = self.stopping_ts
+        result_time['End'] = end_time
+        result_time['CollectStopping'] = self.stopping_ts - self.starting_ts
+        result_time['CollectEnd'] = end_time - self.starting_ts
+        result_time['StoppingDelay'] = end_time - self.stopping_ts
         # the collect, event, and checkin periods are in the tally server config
         result_time['ClockPadding'] = self.clock_padding
         result_context['Time'] = result_time
@@ -756,18 +912,37 @@ class CollectionPhase(object):
             result_context.update(self.get_client_context_by_type())
 
         # now remove any context we are sure we don't want
-        # We don't need the paths from the configs
-        for uid in result_context.get('DataCollector', {}):
-            if 'state' in result_context['DataCollector'][uid].get('Config', {}):
-                del result_context['DataCollector'][uid]['Config']['state']
+        for dc in result_context.get('DataCollector', {}).values():
+            # We don't need the paths from the configs
+            if 'state' in dc.get('Config', {}):
+                dc['Config']['state'] = "(state path)"
+            if 'secret_handshake' in dc.get('Config', {}):
+                dc['Config']['secret_handshake'] = "(secret_handshake path)"
+            # or the counters
+            if 'counters' in dc.get('Config', {}).get('Start',{}):
+                dc['Config']['Start']['counters'] = "(counter bins, no counts)"
+            if 'counters' in dc.get('Config', {}).get('Start',{}).get('noise',{}):
+                dc['Config']['Start']['noise']['counters'] = "(counter sigmas, no counts)"
+            # or the sk public keys
+            if 'sharekeepers' in dc.get('Config', {}).get('Start',{}):
+                for uid in dc['Config']['Start']['sharekeepers']:
+                    dc['Config']['Start']['sharekeepers'][uid] = "(public key)"
+
         # We don't want the public key in the ShareKeepers' statuses
-        for uid in result_context.get('ShareKeeper', {}):
-            if 'key' in result_context['ShareKeeper'][uid].get('Config', {}):
-                del result_context['ShareKeeper'][uid]['Config']['key']
-            if 'state' in result_context['ShareKeeper'][uid].get('Config', {}):
-                del result_context['ShareKeeper'][uid]['Config']['state']
-            if 'public_key' in result_context['ShareKeeper'][uid].get('Status', {}):
-                del result_context['ShareKeeper'][uid]['Status']['public_key']
+        for sk in result_context.get('ShareKeeper', {}).values():
+            if 'key' in sk.get('Config', {}):
+                sk['Config']['key'] = "(key path)"
+            if 'state' in sk.get('Config', {}):
+                sk['Config']['state'] = "(state path)"
+            if 'secret_handshake' in sk.get('Config', {}):
+                sk['Config']['secret_handshake'] = "(secret_handshake path)"
+            if 'public_key' in sk.get('Status', {}):
+                sk['Status']['public_key'] = "(public key)"
+            # or the counters
+            if 'counters' in sk.get('Config', {}).get('Start',{}):
+                sk['Config']['Start']['counters'] = "(counter bins, no counts)"
+            if 'counters' in sk.get('Config', {}).get('Start',{}).get('noise',{}):
+                sk['Config']['Start']['noise']['counters'] = "(counter sigmas, no counts)"
 
         # add the status and config for the tally server itself
         result_context['TallyServer'] = {}
@@ -778,43 +953,64 @@ class CollectionPhase(object):
 
         # We don't need the paths from the configs
         if 'cert' in result_context['TallyServer']['Config']:
-            del result_context['TallyServer']['Config']['cert']
+            result_context['TallyServer']['Config']['cert'] = "(cert path)"
         if 'key' in result_context['TallyServer']['Config']:
-            del result_context['TallyServer']['Config']['key']
+            result_context['TallyServer']['Config']['key'] = "(key path)"
         if 'state' in result_context['TallyServer']['Config']:
-            del result_context['TallyServer']['Config']['state']
+            result_context['TallyServer']['Config']['state'] = "(state path)"
+        if 'secret_handshake' in result_context['TallyServer']['Config']:
+            result_context['TallyServer']['Config']['secret_handshake'] = \
+                "(secret_handshake path)"
+        if 'allocation' in result_context['TallyServer']['Config']:
+            result_context['TallyServer']['Config']['allocation'] = \
+                "(allocation path)"
+        if 'results' in result_context['TallyServer']['Config']:
+            result_context['TallyServer']['Config']['results'] = \
+                "(results path)"
         # And we don't need the bins, they're duplicated in 'Tally'
         if 'counters' in result_context['TallyServer']['Config']:
-            del result_context['TallyServer']['Config']['counters']
+            result_context['TallyServer']['Config']['counters'] = "(counter bins, no counts)"
+        # but we want the noise, because it's not in Tally
 
         return result_context
 
-    def write_results(self, path_prefix):
+    def write_results(self, path_prefix, end_time):
+        '''
+        Write collections results to a file in path_prefix, including end_time
+        in the context.
+        '''
         # this should already have been done, but let's make sure
         path_prefix = normalise_path(path_prefix)
 
         if not self.is_stopped():
             logging.warning("trying to write results before collection phase is stopped")
             return
+
+        # keep going, we want the context for debugging
+        tally_was_successful = False
         if len(self.final_counts) <= 0:
             logging.warning("no tally results to write!")
-            return
+        else:
+            tallied_counter = SecureCounters(self.counters_config,
+                                             self.modulus)
+            tally_was_successful = tallied_counter.tally_counters(
+                self.final_counts.values())
 
-        tallied_counter = SecureCounters(self.counters_config, self.modulus)
-        tally_was_successful = tallied_counter.tally_counters(self.final_counts.values())
-
+        # keep going, we want the context for debugging
         if not tally_was_successful:
             logging.warning("problem tallying counters, did all counters and bins match!?")
-            return
+        else:
+            tallied_counts = tallied_counter.detach_counts()
 
-        tallied_counts = tallied_counter.detach_counts()
-
-        # For backwards compatibility, write out a "tallies" file
-        # This file only has the counts
-        begin, end = int(round(self.starting_ts)), int(round(self.stopping_ts))
-        filepath = os.path.join(path_prefix, "privcount.tallies.{}-{}.json".format(begin, end))
-        with open(filepath, 'a') as fout:
-            json.dump(tallied_counts, fout, sort_keys=True, indent=4)
+            # For backwards compatibility, write out a "tallies" file
+            # This file only has the counts
+            begin = int(round(self.starting_ts))
+            end = int(round(self.stopping_ts))
+            filepath = os.path.join(path_prefix,
+                                    "privcount.tallies.{}-{}.json"
+                                    .format(begin, end))
+            with open(filepath, 'w') as fout:
+                json.dump(tallied_counts, fout, sort_keys=True, indent=4)
 
         #logging.info("tally was successful, counts for phase from %d to %d were written to file '%s'", begin, end, filepath)
 
@@ -822,17 +1018,23 @@ class CollectionPhase(object):
         # This makes it easier to interpret results later on
         result_info = {}
 
-        # add the existing list of counts as its own item
-        result_info['Tally'] = tallied_counts
+        if tally_was_successful:
+            # add the existing list of counts as its own item
+            result_info['Tally'] = tallied_counts
 
         # add the context of the outcome as another item
-        result_info['Context'] = self.get_result_context()
+        result_info['Context'] = self.get_result_context(end_time)
 
-        filepath = os.path.join(path_prefix, "privcount.outcome.{}-{}.json".format(begin, end))
-        with open(filepath, 'a') as fout:
+        filepath = os.path.join(path_prefix, "privcount.outcome.{}-{}.json"
+                                .format(begin, end))
+        with open(filepath, 'w') as fout:
             json.dump(result_info, fout, sort_keys=True, indent=4)
 
-        logging.info("tally was successful, outcome of phase of {} was written to file '{}'".format(format_interval_time_between(begin, 'from', end), filepath))
+        logging.info("tally {}, outcome of phase of {} was written to file '{}'"
+                     .format(
+                     "was successful" if tally_was_successful else "failed",
+                     format_interval_time_between(begin, 'from', end),
+                     filepath))
         self.final_counts = {}
 
     def log_status(self):

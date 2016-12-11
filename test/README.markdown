@@ -8,7 +8,7 @@ It also contains some unit tests that exercise various PrivCount subsystems.
 ## Prerequisites
 
 You should have followed the main README to setup and install PrivCount. You should have your
-PYTHONPATH setup properly so that you can call `privcount` without providing a full paths to it.
+PYTHONPATH setup properly so that you can call `privcount` without providing a full path to it.
 
 ## Running the test
 
@@ -30,6 +30,10 @@ For quick integration testing, reduce the collect_period to 2, and the event_per
 
 #### Unit Tests
 
+Activate your python virtual environment (if you have one):
+
+    source ../venv/bin/activate
+
 Run the unit tests: (optional)
 
     python test_format_time.py
@@ -45,7 +49,7 @@ If you have a local privcount-patched Tor instance on control port 9050, you can
 
 Start the event server that will supply events to the data collector:
 
-    zcat events.txt.gz | privcount inject --port 20003 --simulate --log -
+    zcat events2.txt.gz | privcount inject --port 20003 --simulate --log -
 
 Start the PrivCount components:
 

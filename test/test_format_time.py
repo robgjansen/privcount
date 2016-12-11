@@ -1,4 +1,4 @@
-from privcount.util import normalise_time, format_epoch, format_period, format_datetime
+from privcount.log import normalise_time, format_epoch, format_period, format_datetime
 
 # some of this code is only executed when we reach 1 week
 # so let's test it thoroughly

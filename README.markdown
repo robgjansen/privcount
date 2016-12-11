@@ -26,13 +26,18 @@ Base components:
     system libs: libssl libssl-dev cffi
     python libs: pyyaml, twisted, pyopenssl, service-identity, cryptography
 
+    We require OpenSSL version 1.0.2 or later for SHA256-padded RSA encryption.
+
 Optional graphing extensions (required only for the `plot` subcommand):
 
     system libs: libpng libpng-devel, #TODO this list is incomplete
     python libs: numpy, matplotlib
 
-System libs can be install with `apt-get`, `yum`, `brew`, etc. Python libs can be installed with `pip`,
-as we explain below.
+Optional Tor consensus parsing tool:
+
+    python libs: numpy, stem
+
+System libs can be install with `apt-get`, `yum`, `brew`, etc. Python libs can be installed with `pip`, as we explain below.
 
 # installation
 
@@ -42,23 +47,57 @@ Run the following from the base directory of this package (i.e., the same locati
     pip install virtualenv
     virtualenv --no-site-packages venv
     source venv/bin/activate
-    pip install -r requirements.txt # excludes the optional numpy and matplotlib libraries
+    pip install -r requirements.txt
+    # if you want to use the optional privcount plot command
+    pip install -r requirements-plot.txt
+    # if you want to use the optional compute_fractional_position_weights tool
+    pip install -r requirements-weights.txt
     pip install -I .
+    test/run_test.sh -I . # run the unit tests to check your setup
     deactivate
+
+Troubleshooting:
+
+If 'pip install virtualenv' fails due to permissions errors, install as root. Using 'sudo -H' before 'pip install' should work.
+
+Some environments (macOS) might need help locating headers and libraries. If so, use 'CFLAGS="-I/opt/local/include" LDFLAGS="-L/opt/local/lib"' (substituting your package manager's path) before pip install.
+
+Some environments (macOS) use the site packages, even if '--no-site-packages' is specified. This can cause failures. Use 'pip install -I' to work around this. 'pip --isolated' might also help, as may 'pip uninstall' outside the virtualenv.
+
+If the encryption unit tests fail with an "UnsupportedAlgorithm" exception, make sure you have cryptography >= 1.4 with OpenSSL >= 1.0.2. You may be using a binary wheel that was compiled with an older OpenSSL version. If so, rebuild and reinstall cryptography using 'pip install -I --no-binary cryptography cryptography'.
 
 # running
 
-To run PrivCount, simply activate the virtual environment that you created earlier and then run
-PrivCount as normal. For example:
+To run PrivCount, simply activate the virtual environment that you created earlier and then run PrivCount as normal. For example:
 
     source venv/bin/activate # enter the virtual environment
+    test/test_tor_ctl_event.py <CONTROL_PORT> # test privcount events
     privcount --help
     ...
     deactivate # exit the virtual environment
 
+# deployment
+
+## keys
+
+On first run, PrivCount creates the keys that it needs to run:
+
+The TallyServer creates a RSA key pair for SSL encryption:
+    * the clients do not check the fingerprint of the certificate
+
+The TallyServer creates a PrivCount secret handshake key:
+    * each ShareKeeper and DataCollector needs to know this key to successfully handshake with the TallyServer.
+
+Each ShareKeeper creates a RSA key pair for public key encryption:
+     * each DataCollector needs to know the SHA256 hash of the public key of each ShareKeeper
+
 # testing
 
-See `test/README.markdown` for notes about testing PrivCount in a private local deployment.
+See `test/README.markdown` for notes about testing PrivCount in a private local deployment, or just run the unit tests:
+
+    source venv/bin/activate # enter the virtual environment
+    test/run_test.sh -I .
+    deactivate # exit the virtual environment
 
 ----------
 

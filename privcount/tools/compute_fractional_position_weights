@@ -1,0 +1,200 @@
+#!/usr/bin/env python
+
+import sys
+import os
+from multiprocessing import Pool, cpu_count
+from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
+
+from numpy import mean
+from stem import Flag
+from stem.descriptor import parse_file
+from stem.descriptor import DocumentHandler
+from stem.descriptor.remote import DescriptorDownloader
+
+'''
+This is a general purpose tool that will search through a consenus or all
+consensuses in a directory and compute the mean position weights that a
+group of relays by fingerprints had over all consensuses.
+
+Example execution (the '-' means download the latest consensus from Tor):
+
+./compute_fractional_position_weights - 068308AD070849A71B8C1DB06C2509E82C40B908 11796EF96A84A328124B64383E768AFF90BA583F 11EAB5C9137906EF7E6A32365C4B37613698E647 1A4488A367D89D0EFDA88116059FEBCACF0F508A 1A58D4BF5B4A0AF0378F650D11A6569685C35C1D 363F42695F2DD825DA5A4E6ABF3FBDFCFD1E9AE2 3887BA09C064062B711125009404B372A90BF190 493CD90F239AE608D9C046C543C59ABB9815B4DB 87AA996EFB625724F8932EF789C761E33A66A83A A2D885A9B6F4D310372EA44FC0753F45CE44D1F7 B215FA3E0C37E71FF4330EA0A7D5F75D9BD2F2BE B6718125C43ECA2E5011B3C681BB6638617A9686 BA24CD0E76682C5AAFC09CC05476B94653699A39 C127882E54F77884F8D2764CB9744B1F2C94654B C6B3546CC6BCCB649FEC82D348D464554BC6323D CE46351D06E89C0047C34AF2CED26C441B57FDF0 DE684E6C6B7773B8BE74B4D941E4178988E15E26 F6D42724B636FDF05B0EAEBE5E830C586DCFD114 0DA9BD201766EDB19F57F49F1A013A8A5432C008 12B80ABF019354A9D25EE8BE85EB3C0AD8F7DFC1 890E2EA65455FBF0FAAB4159FAC4412BDCB24295 C170AE5A886C5A09D6D1CF5CF284653632EEF25D D52CD431CEF28E01B11F545A84347EE45524BCA7 EE21F83AB6F76E3B3FFCBA5C2496F789CB84E7C6 A5945077E0D35729F8E2920A54BE12A0058B403E D53793315E290D250E9AFC431A4C9068A1E53C98
+'''
+
+def main():
+    args = get_args()
+
+    if args.consensus == '-':
+        args.consensus = fetch_consensus()
+
+    expanded_path = os.path.abspath(os.path.expanduser(args.consensus))
+    assert os.path.exists(expanded_path)
+
+    consensus_paths = []
+    if os.path.isdir(expanded_path):
+        for filename in os.listdir(expanded_path):
+            if filename.endswith("consensus"):
+                consensus_paths.append(os.path.join(expanded_path, filename))
+    else:
+        consensus_paths.append(expanded_path)
+
+    fps = [fp_str.strip('$') for fp_str in args.fingerprints]
+    work_items = [[path, fps] for path in consensus_paths]
+    results = []
+    if args.use_process_pool:
+        p = Pool(cpu_count())
+        try:
+            results = do_map(p, work_items)
+        except KeyboardInterrupt:
+            print >> sys.stderr, "interrupted, terminating process pool"
+            p.terminate()
+            p.join()
+            sys.exit()
+    else:
+        for params in work_items:
+            result = process_consensus(params)
+            results.append(result)
+
+    guard_fracs, middle_fracs, exit_fracs = do_reduce(results)
+    print "mean guard fraction is {}".format(mean(guard_fracs))
+    print "mean middle fraction is {}".format(mean(middle_fracs))
+    print "mean exit fraction is {}".format(mean(exit_fracs))
+
+def fetch_consensus():
+    # if we had stem 1.5 we could do:
+    # import stem.descriptor.remote
+    # stem.descriptor.remote.get_consensus()
+    downloader = DescriptorDownloader()
+    consensus = downloader.get_consensus(document_handler = DocumentHandler.DOCUMENT).run()[0]
+
+    time_label = str(consensus.valid_after).replace(':', '-').replace(' ', '-')
+    file_path = "{}-consensus.txt".format(time_label)
+
+    if not os.path.exists(file_path):
+        with open(file_path, 'w') as descriptor_file:
+          descriptor_file.write("@type network-status-consensus-3 1.0\n" + str(consensus))
+
+    return file_path
+
+def do_map(pool, work_items):
+    async_result = pool.map_async(process_consensus, work_items)
+    while not async_result.ready():
+        async_result.wait(1)
+    return async_result.get()
+
+# this func is run by helper processes in process pool
+def process_consensus(params):
+    consensus_path, prints = params[0], params[1]
+    guard_frac, middle_frac, exit_frac = get_fractional_weights(consensus_path, prints)
+    return [guard_frac, middle_frac, exit_frac]
+
+def do_reduce(async_results):
+    guard_fracs, middle_fracs, exit_fracs = [], [], []
+    for result in async_results:
+        if result is None: continue
+        guard_frac, middle_frac, exit_frac = result[0], result[1], result[2]
+        guard_fracs.append(guard_frac)
+        middle_fracs.append(middle_frac)
+        exit_fracs.append(exit_frac)
+    return guard_fracs, middle_fracs, exit_fracs
+
+def get_fractional_weights(consensus_path, my_fingerprints):
+    net_status = next(parse_file(consensus_path, document_handler='DOCUMENT', validate=False))
+    bw_weight_scale = net_status.params['bwweightscale'] if 'bwweightscale' in net_status.params else 1.0
+
+    my_guard, total_guard, my_middle, total_middle, my_exit, total_exit = 0, 0, 0, 0, 0, 0
+
+    for (fingerprint, router_entry) in net_status.routers.items():
+        #print fingerprint
+        guard_weighted_bw, middle_weighted_bw, exit_weighted_bw = get_weighted_bandwidths(router_entry, net_status.bandwidth_weights, bw_weight_scale)
+        total_guard += guard_weighted_bw
+        total_middle += middle_weighted_bw
+        total_exit += exit_weighted_bw
+        if fingerprint in my_fingerprints:
+            my_guard += guard_weighted_bw
+            my_middle += middle_weighted_bw
+            my_exit += exit_weighted_bw
+
+    return float(my_guard)/float(total_guard), float(my_middle)/float(total_middle), float(my_exit)/float(total_exit)
+
+def get_weighted_bandwidths(router_entry, bw_weights, bw_weight_scale):
+    # example bw_weights: {u'Web': 10000, u'Wdb': 10000, u'Weg': 10000, u'Wee': 10000, u'Wed': 10000, u'Wgd': 0, u'Wgb': 10000, u'Wgg': 5920, u'Wem': 10000, u'Wbg': 4080, u'Wbd': 0, u'Wbe': 0, u'Wmm': 10000, u'Wmb': 10000, u'Wgm': 5920, u'Wbm': 10000, u'Wmg': 4080, u'Wme': 0, u'Wmd': 0}
+    guard_weighted_bw, middle_weighted_bw, exit_weighted_bw = 0.0, 0.0, 0.0
+
+    if 'BadExit' not in router_entry.flags:
+        bw = float(router_entry.bandwidth)
+
+        if Flag.GUARD in router_entry.flags and Flag.FAST in router_entry.flags and Flag.STABLE in router_entry.flags:
+            guard_weight = float(get_bw_weight(router_entry.flags, 'g', bw_weights)) / float(bw_weight_scale)
+            guard_weighted_bw = bw * guard_weight
+
+        middle_weight = float(get_bw_weight(router_entry.flags, 'm', bw_weights)) / float(bw_weight_scale)
+        middle_weighted_bw = bw * middle_weight
+
+        if router_entry.exit_policy.is_exiting_allowed():
+            exit_weight = float(get_bw_weight(router_entry.flags, 'e', bw_weights)) / float(bw_weight_scale)
+            exit_weighted_bw = bw * exit_weight
+
+    return guard_weighted_bw, middle_weighted_bw, exit_weighted_bw
+
+# from torps
+def get_bw_weight(flags, position, bw_weights):
+    """Returns weight to apply to relay's bandwidth for given position.
+        flags: list of Flag values for relay from a consensus
+        position: position for which to find selection weight,
+             one of 'g' for guard, 'm' for middle, and 'e' for exit
+        bw_weights: bandwidth_weights from NetworkStatusDocumentV3 consensus
+    """
+
+    if (position == 'g'):
+        if (Flag.GUARD in flags) and (Flag.EXIT in flags):
+            return bw_weights['Wgd']
+        elif (Flag.GUARD in flags):
+            return bw_weights['Wgg']
+        elif (Flag.EXIT not in flags):
+            return bw_weights['Wgm']
+        else:
+            # exit-flagged nodes without guard flag never serve in guard position
+            #raise ValueError('Wge weight does not exist.')
+            return 0
+    elif (position == 'm'):
+        if (Flag.GUARD in flags) and (Flag.EXIT in flags):
+            return bw_weights['Wmd']
+        elif (Flag.GUARD in flags):
+            return bw_weights['Wmg']
+        elif (Flag.EXIT in flags):
+            return bw_weights['Wme']
+        else:
+            return bw_weights['Wmm']
+    elif (position == 'e'):
+        if (Flag.GUARD in flags) and (Flag.EXIT in flags):
+            return bw_weights['Wed']
+        elif (Flag.GUARD in flags):
+            return bw_weights['Weg']
+        elif (Flag.EXIT in flags):
+            return bw_weights['Wee']
+        else:
+            return bw_weights['Wem']
+    else:
+        raise ValueError('get_weight does not support position {0}.'.format(
+            position))
+
+class CustomHelpFormatter(ArgumentDefaultsHelpFormatter):
+    # adds the 'RawDescriptionHelpFormatter' to the ArgsDefault one
+    def _fill_text(self, text, width, indent):
+        return ''.join([indent + line for line in text.splitlines(True)])
+
+def get_args():
+    parser = ArgumentParser(
+            description='Compute weighted fractional position bandwidths for set of relays',
+            formatter_class=CustomHelpFormatter)
+
+    parser.add_argument('consensus', help="Path to a consensus file or a directory containing multiple consensus files, or '-' to download and use the latest Tor consensus", metavar="PATH")
+    parser.add_argument('fingerprints', help="Fingerprint of relay(s) to include in reported fractions", metavar="FP", nargs='+')
+    parser.add_argument('-m', action='store_true', dest="use_process_pool", help="Run with a {} process pool".format(cpu_count()))
+
+    args = parser.parse_args()
+    return args
+
+if __name__ == "__main__":
+    sys.exit(main())

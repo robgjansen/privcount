@@ -1,7 +1,7 @@
 #!/usr/bin/python
 
 import os, json
-from privcount.util import TrafficModel
+from privcount.traffic_model import TrafficModel
 
 MODEL_FILENAME="traffic.model.json"
 
