@@ -288,6 +288,28 @@ PRIVCOUNT_COUNTER_EVENTS = {
 DEFAULT_DUMMY_COUNTER_NAME : set(),
 }
 
+def register_dynamic_counter(counter_name, counter_events):
+    '''
+    Register counter_name as a counter which uses the events in counter_events.
+    If counter_name is already a registered counter, updates the list of events
+    for counter.
+    This should be called before the counters are checked:
+    - in the Tally Server, early in refresh_config,
+    - in PrivCountClient, early in check_start_config
+      (PrivCountClient is a parent class of Data Collector and Share Keeper)
+    Any event updates are applied the next time the data collector starts a
+    collection phase.
+    Logs a message and ignores unknown events.
+    '''
+    event_set = set()
+    for event in counter_events:
+        if event in get_valid_events():
+            event_set.add(event)
+        else:
+            logging.warning("Ignoring unknown event {} for dynamic counter {}"
+                            .format(event, counter_name))
+    PRIVCOUNT_COUNTER_EVENTS[counter_name] = event_set
+
 def get_valid_counters():
     '''
     Return a set containing the name of each privcount counter, in titlecase.
