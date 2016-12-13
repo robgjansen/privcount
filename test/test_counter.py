@@ -5,9 +5,10 @@
 
 import sys
 
-from privcount.counter import SecureCounters, adjust_count_signed, counter_modulus, add_counter_limits_to_config, get_events_for_known_counters
 from math import sqrt
 from random import SystemRandom
+
+from privcount.counter import SecureCounters, adjust_count_signed, counter_modulus, add_counter_limits_to_config, get_events_for_known_counters
 
 import logging
 # DEBUG logs every check: use it on failure

@@ -8,11 +8,11 @@ import logging
 
 from time import time
 
+from privcount.config import normalise_path
 from privcount.counter import check_counters_config, check_noise_weight_config, combine_counters, CollectionDelay, float_accuracy, add_counter_limits_to_config
 from privcount.log import format_delay_time_until, format_elapsed_time_since
 from privcount.statistics_noise import DEFAULT_SIGMA_TOLERANCE
 from privcount.traffic_model import TrafficModel, check_traffic_model_config
-from privcount.util import normalise_path
 
 def get_remaining_rounds(num_phases, continue_config):
         '''

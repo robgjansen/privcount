@@ -1,31 +1,12 @@
 '''
-Created on Dec 15, 2015
+Created on Dec 8, 2016
 
-@author: rob
+@author: teor
+
+Based on previous code
 '''
 
-# This module is for miscellaneous functions
-# When a section grows large enough, move it to its own module
-
-import socket
-
 from os import path
-
-from privcount.counter import sample_randint
-
-## Networking ##
-
-def get_random_free_port():
-    while True:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        # choose an evenly distributed port that doesn't leak RNG state
-        port = sample_randint(10000, 60000)
-        rc = s.connect_ex(('127.0.0.1', port))
-        s.close()
-        if rc != 0: # error connecting, port is available
-            return port
-
-## File Paths / Config ##
 
 def normalise_path(path_str):
     '''

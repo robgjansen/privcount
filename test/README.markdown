@@ -37,13 +37,15 @@ Activate your python virtual environment (if you have one):
 Run the unit tests: (optional)
 
     python test_format_time.py
-    python test_keyed_random.py
-    python test_counters.py
+    python test_encryption.py
+    python test_random.py
+    python test_counter.py
     python test_traffic_model.py
 
-If you have a local privcount-patched Tor instance on control port 9050, you can test that it supports PRIVCOUNT events: (optional)
+If you have a local privcount-patched Tor instance, you can test that it is returning PRIVCOUNT events:
 
-    python test_tor_ctl_event.py
+
+    python test_tor_ctl_event.py <control-port-or-path>
 
 #### Integration Tests
 

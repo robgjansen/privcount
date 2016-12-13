@@ -221,8 +221,7 @@ def decrypt_pk(priv_key, ciphertext):
     Decrypt a b64encoded ciphertext string with the RSA private key priv_key,
     using CryptoHash() as the OAEP/MGF1 padding hash.
     Returns the plaintext.
-    Fails and calls os._exit on an UnsupportedAlgorithm exception.
-    (Other decryption failures result in an exception being raised.)
+    Decryption failures result in an exception being raised.
     """
     try:
         plaintext = priv_key.decrypt(

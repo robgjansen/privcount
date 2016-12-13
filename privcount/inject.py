@@ -13,8 +13,11 @@ from twisted.internet import reactor
 from twisted.internet.protocol import ServerFactory
 from twisted.internet.error import ReactorNotRunning
 
+from privcount.config import normalise_path
+from privcount.connection import listen
 from privcount.protocol import TorControlServerProtocol
-from privcount.util import normalise_path
+
+DEFAULT_PRIVCOUNT_INJECT_SOCKET = '/tmp/privcount-inject'
 
 listener = None
 
@@ -153,17 +156,52 @@ def main():
     run_inject(args)
 
 def run_inject(args):
+    '''
+    start the injector, and start it listening
+    '''
     # pylint: disable=E1101
     injector = PrivCountDataInjector(args.log, args.simulate, int(args.prune_before), int(args.prune_after))
-    listener = reactor.listenTCP(int(args.port), injector, interface="127.0.0.1")
+    # The injector listens on all of IPv4, IPv6, and a control socket, and
+    # injects events into the first client to connect
+    # Since these are synthetic events, it is safe to use /tmp for the socket
+    # path
+    # XXX multiple connections to our server will kill old connections
+    listener_config = {}
+    if args.port is not None:
+        listener_config['port'] = args.port
+        if args.ip is not None:
+            listener_config['ip'] = args.ip
+    if args.unix is not None:
+        listener_config['unix']= args.unix
+    listeners = listen(injector, listener_config, ip_version_default = [4, 6])
     reactor.run()
 
 def add_inject_args(parser):
-    parser.add_argument('-p', '--port', help="port on which to listen for PrivCount connections", required=True)
-    parser.add_argument('-l', '--log', help="a file PATH to a PrivCount event log file, may be '-' for STDIN", required=True, default='-')
-    parser.add_argument('-s', '--simulate', action='store_true', help="add pauses between each event injection to simulate the inter-arrival times from the source data")
-    parser.add_argument('--prune-before', help="do not inject events that occurred before the given unix timestamp", default=0)
-    parser.add_argument('--prune-after', help="do not inject events that occurred after the given unix timestamp", default=2147483647)
+    parser.add_argument('-p', '--port',
+                        help="port on which to listen for PrivCount connections(default: no IP listener)",
+                        required=False)
+    parser.add_argument('-i', '--ip',
+                        help="IPv4 or IPv6 address on which to listen for PrivCount connections (default: both 127.0.0.1 and ::1)",
+                        required=False)
+    parser.add_argument('-u', '--unix',
+                        help="Unix socket on which to listen for PrivCount connections (default: '{}')"
+                        .format(DEFAULT_PRIVCOUNT_INJECT_SOCKET),
+                        required=False,
+                        default=DEFAULT_PRIVCOUNT_INJECT_SOCKET)
+    parser.add_argument('-l', '--log',
+                        help="a file PATH to a PrivCount event log file, may be '-' for STDIN (default: STDIN)",
+                        required=True,
+                        default='-')
+    parser.add_argument('-s', '--simulate',
+                        action='store_true',
+                        help="add pauses between each event injection to simulate the inter-arrival times from the source data",
+                        default=True)
+    parser.add_argument('--prune-before',
+                        help="do not inject events that occurred before the given unix timestamp",
+                        default=0)
+    parser.add_argument('--prune-after',
+                        help="do not inject events that occurred after the given unix timestamp",
+                        default=2147483647)
 
 if __name__ == "__main__":
     sys.exit(main())

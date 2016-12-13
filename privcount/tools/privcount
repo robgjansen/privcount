@@ -9,8 +9,8 @@ import os
 import logging
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter, ArgumentTypeError
 
-from privcount.plot import add_plot_args
 from privcount.inject import add_inject_args
+from privcount.plot import add_plot_args
 
 class CustomHelpFormatter(ArgumentDefaultsHelpFormatter):
     # adds the 'RawDescriptionHelpFormatter' to the ArgsDefault one

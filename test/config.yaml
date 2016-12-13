@@ -62,7 +62,17 @@ share_keeper:
 data_collector:
     name: phantomtrain1 # a unique, human meaningful name for debugging
     state: 'privcount.dc.state' # path to file where persistent state will be stored
-    event_source: 20003 # the Tor control port from which we will receive events
+    # the Tor control connection from which we will receive events
+    # Can be:
+    # - port, with ip optional (default 127.0.0.1), or
+    # - a unix socket path
+    # Only choose one connection method: using multiple methods risks receiving
+    # duplicate events. (We use multiple methods to ensure that both methods
+    # work during testing.)
+    event_source:
+        port: 20003
+        #ip: 127.0.0.1 # optional (default 127.0.0.1), use ::1 for IPv6
+        unix: /tmp/privcount-inject # control socket path. Tor defaults to /var/run/tor/control in many common distributions.
     tally_server_info: # where the tally server is located
         ip: 127.0.0.1
         port: 20001

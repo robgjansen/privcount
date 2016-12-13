@@ -16,6 +16,7 @@ from base64 import b64encode
 from twisted.internet import reactor, task, ssl
 from twisted.internet.protocol import ServerFactory
 
+from privcount.config import normalise_path, choose_secret_handshake_path
 from privcount.counter import SecureCounters, counter_modulus, min_blinded_counter_value, max_blinded_counter_value, min_tally_counter_value, max_tally_counter_value, add_counter_limits_to_config, check_noise_weight_config, check_counters_config, CollectionDelay, float_accuracy
 from privcount.crypto import generate_keypair, generate_cert
 from privcount.log import log_error, format_elapsed_time_since, format_elapsed_time_wait, format_delay_time_until, format_interval_time_between, format_last_event_time_since
@@ -23,7 +24,6 @@ from privcount.node import PrivCountServer, continue_collecting, log_tally_serve
 from privcount.protocol import PrivCountServerProtocol
 from privcount.statistics_noise import get_noise_allocation
 from privcount.traffic_model import TrafficModel, check_traffic_model_config
-from privcount.util import normalise_path, choose_secret_handshake_path
 
 # for warning about logging function and format # pylint: disable=W1202
 # for calling methods on reactor # pylint: disable=E1101

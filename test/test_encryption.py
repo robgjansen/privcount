@@ -12,8 +12,8 @@ from base64 import b64encode, b64decode
 from os import urandom
 from random import SystemRandom
 
-from privcount.crypto import load_public_key_file, load_private_key_file, encrypt_pk, decrypt_pk, generate_symmetric_key, encrypt_symmetric, decrypt_symmetric, encode_data, decode_data, encrypt, decrypt
 from privcount.counter import counter_modulus
+from privcount.crypto import load_public_key_file, load_private_key_file, encrypt_pk, decrypt_pk, generate_symmetric_key, encrypt_symmetric, decrypt_symmetric, encode_data, decode_data, encrypt, decrypt
 
 import logging
 # DEBUG logs every check: use it on failure

@@ -71,7 +71,7 @@ If the encryption unit tests fail with an "UnsupportedAlgorithm" exception, make
 To run PrivCount, simply activate the virtual environment that you created earlier and then run PrivCount as normal. For example:
 
     source venv/bin/activate # enter the virtual environment
-    test/test_tor_ctl_event.py <CONTROL_PORT> # test privcount events
+    test/test_tor_ctl_event.py <control-port-or-path> # test privcount events
     privcount --help
     ...
     deactivate # exit the virtual environment

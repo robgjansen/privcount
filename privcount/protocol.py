@@ -1,7 +1,7 @@
 import logging, json, math
 
 from time import time
-from os import _exit, urandom, path
+from os import urandom, path
 from base64 import b64encode, b64decode
 
 from twisted.internet import reactor
@@ -9,6 +9,7 @@ from twisted.protocols.basic import LineOnlyReceiver
 
 from cryptography.hazmat.primitives.hashes import SHA256
 
+from privcount.connection import transport_info, transport_peer, transport_host
 from privcount.counter import get_events_for_counters, get_valid_events
 from privcount.crypto import CryptoHash, get_hmac, verify_hmac, b64_padded_length
 
@@ -47,37 +48,41 @@ class PrivCountProtocol(LineOnlyReceiver):
             logging.error(
                 "Exception {} while initialising PrivCountProtocol instance"
                 .format(e))
-            # die immediately using os._exit()
-            # we can't use sys.exit() here, because twisted catches and logs it
-            _exit(1)
-        except:
-            # catch exceptions that don't derive from BaseException
-            logging.error(
-                "Unknown Exception while processing event type: {} payload: {}"
-                .format(event_type, event_payload))
-            _exit(1)
+            reactor.stop()
 
-    def connectionMade(self): # overrides twisted function
-        peer = self.transport.getPeer()
-        logging.debug("Connection with {}:{}:{} was made".format(peer.type, peer.host, peer.port))
+    def connectionMade(self):
+        '''
+        overrides twisted function
+        '''
+        logging.debug("Connection with {} was made"
+                      .format(transport_info(self.transport)))
 
-    def lineReceived(self, line): # overrides twisted function
-        peer = self.transport.getPeer()
-        logging.debug("Received line '{}' from {}:{}:{}".format(line, peer.type, peer.host, peer.port))
+    def lineReceived(self, line):
+        '''
+        overrides twisted function
+        '''
+        logging.debug("Received line '{}' from {}"
+                      .format(line, transport_info(self.transport)))
         parts = [part.strip() for part in line.split(' ', 1)]
         if len(parts) > 0:
             event_type = parts[0]
             event_payload = parts[1] if len(parts) > 1 else ''
             self.process_event(event_type, event_payload)
 
-    def sendLine(self, line): # overrides twisted function
-        peer = self.transport.getPeer()
-        logging.debug("Sending line '{}' to {}:{}:{}".format(line, peer.type, peer.host, peer.port))
+    def sendLine(self, line):
+        '''
+        overrides twisted function
+        '''
+        logging.debug("Sending line '{}' to {}"
+                      .format(line, transport_info(self.transport)))
         return LineOnlyReceiver.sendLine(self, line)
 
-    def lineLengthExceeded(self, line): # overrides twisted function
-        peer = self.transport.getPeer()
-        logging.warning("Incomming line of length {} exceeded MAX_LENGTH of {}, dropping unvalidated connection to {}:{}:{}".format(len(line), self.MAX_LENGTH, peer.type, peer.host, peer.port))
+    def lineLengthExceeded(self, line):
+        '''
+        overrides twisted function
+        '''
+        logging.warning("Incoming line of length {} exceeded MAX_LENGTH of {}, dropping unvalidated connection to {}"
+                        .format(len(line), transport_info(self.transport)))
         return LineOnlyReceiver.lineLengthExceeded(self, line)
 
     def process_event(self, event_type, event_payload):
@@ -116,16 +121,7 @@ class PrivCountProtocol(LineOnlyReceiver):
             # bring down the privcount network.
             # Since we ignore unrecognised events, the client would have to be
             # maliciously crafted, not just a port scanner.
-
-            # die immediately using os._exit()
-            # we can't use sys.exit() here, because twisted catches and logs it
-            _exit(1)
-        except:
-            # catch exceptions that don't derive from BaseException
-            logging.error(
-                "Unknown Exception while processing event type: {} payload: {}"
-                .format(event_type, event_payload))
-            _exit(1)
+            reactor.stop()
 
         if not self.is_valid_connection:
             self.protocol_failed()
@@ -665,31 +661,47 @@ class PrivCountProtocol(LineOnlyReceiver):
         return True
 
     def handshake_succeeded(self):
-        peer = self.transport.getPeer()
-        logging.debug("Handshake with {}:{}:{} was successful".format(peer.type, peer.host, peer.port))
+        '''
+        Called when the PrivCount handshake succeeds
+        '''
+        logging.debug("Handshake with {} was successful"
+                      .format(transport_info(self.transport)))
         self.is_valid_connection = True
         self.MAX_LENGTH = 512*1024 # now allow longer lines
 
     def handshake_failed(self):
-        peer = self.transport.getPeer()
-        logging.warning("Handshake with {}:{}:{} failed".format(peer.type, peer.host, peer.port))
+        '''
+        Called when the PrivCount handshake fails
+        '''
+        logging.warning("Handshake with {} failed"
+                        .format(transport_info(self.transport)))
         self.is_valid_connection = False
         self.transport.loseConnection()
 
     def protocol_succeeded(self):
-        peer = self.transport.getPeer()
-        logging.debug("Protocol with {}:{}:{} was successful".format(peer.type, peer.host, peer.port))
+        '''
+        Called when the protocol has finished successfully
+        '''
+        logging.debug("Protocol with {} was successful"
+                      .format(transport_info(self.transport)))
         self.transport.loseConnection()
 
     def protocol_failed(self):
-        peer = self.transport.getPeer()
-        logging.warning("Protocol with {}:{}:{} failed".format(peer.type, peer.host, peer.port))
+        '''
+        Called when the prococol finishes in failure
+        '''
+        logging.warning("Protocol with {} failed"
+                        .format(transport_info(self.transport)))
         self.is_valid_connection = False
         self.transport.loseConnection()
 
-    def connectionLost(self, reason): # overrides twisted function
-        peer = self.transport.getPeer()
-        logging.debug("Connection with {}:{}:{} was lost: {}".format(peer.type, peer.host, peer.port, reason.getErrorMessage()))
+    def connectionLost(self, reason):
+        '''
+        overrides twisted function
+        '''
+        logging.debug("Connection with {} was lost: {}"
+                      .format(transport_info(self.transport),
+                              reason.getErrorMessage()))
 
     def handle_handshake_event(self, event_type, event_payload):
         '''
@@ -788,7 +800,13 @@ class PrivCountServerProtocol(PrivCountProtocol):
             client_status = json.loads(parts[1])
 
             client_status['alive'] = time()
-            client_status['host'] = self.transport.getPeer().host
+            host = transport_host(self.transport)
+            if host is None:
+                host = '(unknown)'
+            client_status['host'] = host
+            peer = transport_peer(self.transport)
+            if peer is not None:
+                client_status['peer'] = peer
             client_status['clock_skew'] = 0.0
             client_status['rtt'] = 0.0
 
@@ -960,8 +978,8 @@ class TorControlClientProtocol(LineOnlyReceiver):
         the 'authenticating' state.
         Overrides twisted function.
         '''
-        peer = self.transport.getPeer()
-        logging.debug("Connection with {}:{}:{} was made".format(peer.type, peer.host, peer.port))
+        logging.debug("Connection with {} was made"
+                      .format(transport_info(self.transport)))
         # we must authenticate first, before doing anything else
         self.sendLine("AUTHENTICATE")
         self.state = 'authenticating'
@@ -982,7 +1000,7 @@ class TorControlClientProtocol(LineOnlyReceiver):
                     self.collection_events.add(upper_event)
                 else:
                     logging.warning("Ignored unknown event: {}".format(event))
-        logging.warning("Starting PrivCount collection with events: {} from counters: {} and events: {}"
+        logging.info("Starting PrivCount collection with events: {} from counters: {} and events: {}"
                         .format(" ".join(self.collection_events),
                                 "(none)" if counter_list is None else
                                 " ".join(counter_list),
@@ -1036,7 +1054,7 @@ class TorControlClientProtocol(LineOnlyReceiver):
             self.active_events = None
             self.state = 'waiting'
 
-    def setDiscoveredValue(self, function_name, value, value_name, peer):
+    def setDiscoveredValue(self, function_name, value, value_name):
         '''
         When we discover value from the relay, call set_function to set it,
         and log a message containing value_name if this fails.
@@ -1044,12 +1062,12 @@ class TorControlClientProtocol(LineOnlyReceiver):
         try:
             # Equivalent to self.factory.set_*(value)
             if not getattr(self.factory, function_name)(value):
-                logging.warning("Connection with {}:{}:{}: bad {}: {}"
-                                .format(peer.type, peer.host, peer.port,
+                logging.warning("Connection with {}: bad {}: {}"
+                                .format(transport_info(self.transport),
                                         value_name, value))
         except AttributeError as e:
-            logging.warning("Connection with {}:{}:{}: sent {}: {}, but factory raised {}"
-                            .format(peer.type, peer.host, peer.port,
+            logging.warning("Connection with {}: sent {}: {}, but factory raised {}"
+                            .format(transport_info(self.transport),
                                     value_name, value, e))
 
     def lineReceived(self, line):
@@ -1064,9 +1082,9 @@ class TorControlClientProtocol(LineOnlyReceiver):
         When events are received, process them.
         Overrides twisted function.
         '''
-        peer = self.transport.getPeer()
         line = line.strip()
-        logging.debug("Received line '{}' from {}:{}:{}".format(line, peer.type, peer.host, peer.port))
+        logging.debug("Received line '{}' from {}"
+                      .format(line, transport_info(self.transport)))
 
         if self.state == 'authenticating' and line == "250 OK":
             # Turn off privcount events, so we don't get spurious responses
@@ -1083,60 +1101,62 @@ class TorControlClientProtocol(LineOnlyReceiver):
             # -- These cases continue discovering, or quit() -- #
             # It doesn't have PrivCount
             if line.startswith("552 Unrecognized option"):
-                logging.critical("Connection with {}:{}:{}: does not support PrivCount".format(peer.type, peer.host, peer.port))
+                logging.critical("Connection with {}: does not support PrivCount"
+                                 .format(transport_info(self.transport)))
                 self.quit()
             # It's a relay, and it's just told us its Nickname
             elif line.startswith("250 Nickname="):
                 _, _, nickname = line.partition("Nickname=") # returns: part1, separator, part2
-                self.setDiscoveredValue('set_nickname', nickname, 'Nickname',
-                                        peer)
+                self.setDiscoveredValue('set_nickname', nickname, 'Nickname')
             # It doesn't have a Nickname, maybe it's a client?
             # But we'll catch that when we check the fingerprint, so just ignore this response
             elif line == "250 Nickname":
-                logging.info("Connection with {}:{}:{}: no Nickname".format(peer.type, peer.host, peer.port))
+                logging.info("Connection with {}: no Nickname"
+                             .format(transport_info(self.transport)))
             # It's a relay, and it's just told us its ORPort
             elif line.startswith("250 ORPort="):
                 _, _, orport = line.partition("ORPort=") # returns: part1, separator, part2
-                self.setDiscoveredValue('set_orport', orport, 'ORPort', peer)
+                self.setDiscoveredValue('set_orport', orport, 'ORPort')
             # It doesn't have an ORPort, maybe it's a client?
             # But we'll catch that when we check the fingerprint, so just ignore this response
             elif line == "250 ORPort":
-                logging.warning("Connection with {}:{}:{}: no ORPort".format(peer.type, peer.host, peer.port))
+                logging.warning("Connection with {}: no ORPort"
+                                .format(transport_info(self.transport)))
             # It's a relay, and it's just told us its DirPort
             elif line.startswith("250 DirPort="):
                 _, _, dirport = line.partition("DirPort=") # returns: part1, separator, part2
-                self.setDiscoveredValue('set_dirport', dirport, 'DirPort',
-                                        peer)
+                self.setDiscoveredValue('set_dirport', dirport, 'DirPort')
             elif line == "250 DirPort":
-                logging.info("Connection with {}:{}:{}: no DirPort".format(peer.type, peer.host, peer.port))
+                logging.info("Connection with {}: no DirPort"
+                             .format(transport_info(self.transport)))
             # It's just told us its version
             # The control spec assumes that Tor always has a version, so there's no error case
             elif line.startswith("250-version="):
                 _, _, version = line.partition("version=") # returns: part1, separator, part2
-                self.setDiscoveredValue('set_version', version, 'version',
-                                        peer)
+                self.setDiscoveredValue('set_version', version, 'version')
             # It's just told us its address
             elif line.startswith("250-address="):
                 _, _, address = line.partition("address=") # returns: part1, separator, part2
-                self.setDiscoveredValue('set_address', address, 'address',
-                                        peer)
+                self.setDiscoveredValue('set_address', address, 'address')
             # We asked for its address, and it couldn't find it. That's weird.
             elif line == "551 Address unknown":
-                logging.info("Connection with {}:{}:{}: does not know its own address".format(peer.type, peer.host, peer.port))
+                logging.info("Connection with {}: does not know its own address"
+                             .format(transport_info(self.transport)))
             # -- fingerprint discovery ends in waiting or quit() --
             # It's a relay, and it's just told us its fingerprint
             elif line.startswith("250-fingerprint="):
                 _, _, fingerprint = line.partition("fingerprint=") # returns: part1, separator, part2
                 self.setDiscoveredValue('set_fingerprint', fingerprint,
-                                        'fingerprint', peer)
+                                        'fingerprint')
                 # waiting mode will skip all further lines, until collection
                 self.state = 'waiting'
             # We asked for its fingerprint, and it said it's a client
             elif line == "551 Not running in server mode":
-                logging.warning("Connection with {}:{}:{} failed: not a relay".format(peer.type, peer.host, peer.port))
+                logging.warning("Connection with {} failed: not a relay"
+                                .format(transport_info(self.transport)))
                 self.quit()
             else:
-                self.handleUnexpectedLine(line, peer)
+                self.handleUnexpectedLine(line)
 
             # If we already know what events we should have enabled, start
             # processing them
@@ -1144,7 +1164,7 @@ class TorControlClientProtocol(LineOnlyReceiver):
                 self.enableEvents()
         elif self.state == 'waiting' and line.startswith("2"):
             # log ok events while we're waiting for round start
-            self.handleUnexpectedLine(line, peer)
+            self.handleUnexpectedLine(line)
         elif self.state == 'processing' and line.startswith("650 PRIVCOUNT_"):
             parts = line.split(" ")
             assert len(parts) > 1
@@ -1161,32 +1181,41 @@ class TorControlClientProtocol(LineOnlyReceiver):
             elif not self.factory.handle_event(parts[1:]):
                 self.quit()
         else:
-            self.handleUnexpectedLine(line, peer)
+            self.handleUnexpectedLine(line)
 
-    def handleUnexpectedLine(self, line, peer):
+    def handleUnexpectedLine(self, line):
         '''
         Log any unexpected responses at an appropriate level.
         Quit on error responses.
         '''
         if line == "250 OK":
-            logging.debug("Connection with {}:{}:{}: ok response: '{}'".format(peer.type, peer.host, peer.port, line))
+            logging.debug("Connection with {}: ok response: '{}'"
+                          .format(transport_info(self.transport), line))
         elif line.startswith("650 PRIVCOUNT_"):
-            logging.warning("Connection with {}:{}:{}: unexpected event: '{}'".format(peer.type, peer.host, peer.port, line))
+            logging.warning("Connection with {}: unexpected event: '{}'"
+                            .format(transport_info(self.transport), line))
         elif line.startswith("5"):
-            logging.warning("Connection with {}:{}:{}: unexpected response: '{}'".format(peer.type, peer.host, peer.port, line))
+            logging.warning("Connection with {}: unexpected response: '{}'"
+                            .format(transport_info(self.transport), line))
             self.quit()
         elif line.startswith("2"):
-            logging.info("Connection with {}:{}:{}: ok response: '{}'".format(peer.type, peer.host, peer.port, line))
+            logging.info("Connection with {}: ok response: '{}'"
+                         .format(transport_info(self.transport), line))
         else:
-            logging.warning("Connection with {}:{}:{}: unexpected response: '{}'".format(peer.type, peer.host, peer.port, line))
+            logging.warning("Connection with {}: unexpected response: '{}'"
+                            .format(transport_info(self.transport), line))
             self.quit()
 
     def quit(self):
         self.sendLine("QUIT")
 
-    def connectionLost(self, reason): # overrides twisted function
-        peer = self.transport.getPeer()
-        logging.debug("Connection with {}:{}:{} was lost: {}".format(peer.type, peer.host, peer.port, reason.getErrorMessage()))
+    def connectionLost(self, reason):
+        '''
+        overrides twisted function
+        '''
+        logging.debug("Connection with {} was lost: {}"
+                      .format(transport_info(self.transport),
+                              reason.getErrorMessage()))
 
 class TorControlServerProtocol(LineOnlyReceiver):
     '''
@@ -1237,18 +1266,18 @@ class TorControlServerProtocol(LineOnlyReceiver):
         '''
         overrides twisted function
         '''
-        peer = self.transport.getPeer()
-        logging.debug("Connection with {}:{}:{} was made".format(peer.type, peer.host, peer.port))
+        logging.debug("Connection with {} was made"
+                      .format(transport_info(self.transport)))
 
     def lineReceived(self, line):
         '''
         overrides twisted function
         '''
-        peer = self.transport.getPeer()
         line = line.strip()
         parts = line.split(' ')
 
-        logging.debug("Received line '{}' from {}:{}:{}".format(line, peer.type, peer.host, peer.port))
+        logging.debug("Received line '{}' from {}"
+                      .format(line, transport_info(self.transport)))
 
         # We use " quotes, but tor uses ' quotes. This should not matter.
         if not self.authenticated:
@@ -1342,5 +1371,6 @@ class TorControlServerProtocol(LineOnlyReceiver):
         '''
         overrides twisted function
         '''
-        peer = self.transport.getPeer()
-        logging.debug("Connection with {}:{}:{} was lost: {}".format(peer.type, peer.host, peer.port, reason.getErrorMessage()))
+        logging.debug("Connection with {} was lost: {}"
+                      .format(transport_info(self.transport),
+                              reason.getErrorMessage()))
