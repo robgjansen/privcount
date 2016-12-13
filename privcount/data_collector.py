@@ -17,7 +17,7 @@ from privcount.crypto import get_public_digest_string, load_public_key_string, e
 from privcount.log import log_error, format_delay_time_wait, format_last_event_time_since
 from privcount.node import PrivCountClient
 from privcount.protocol import PrivCountClientProtocol, TorControlClientProtocol
-from privcount.traffic_model import TrafficModel
+from privcount.traffic_model import TrafficModel, check_traffic_model_config
 from privcount.util import normalise_path, choose_secret_handshake_path
 
 # using reactor: pylint: disable=E1101
@@ -153,31 +153,14 @@ class DataCollector(ReconnectingClientFactory, PrivCountClient):
             logging.info('refusing to start collecting without required share keepers')
             return None
 
-        # validate the traffic model we got from the tally server
-        traffic_model_valid = False
+        # if we got a traffic model from the tally server and it passes validation,
+        # then load the traffic model object that we will use during aggregation
+        traffic_model_config = None
         if 'traffic_model' in config:
-            traffic_model_valid = True
-            for k in ['states', 'emission_probability', 'transition_probability', 'start_probability']:
-                if k not in config['traffic_model']:
-                    traffic_model_valid = False
-        # load the traffic model object that we will use during aggregation
-        tmodel = None
-        if traffic_model_valid:
-            # build the model
-            states = config['traffic_model']['states']
-            start_p = config['traffic_model']['start_probability']
-            trans_p = config['traffic_model']['transition_probability']
-            emit_p = config['traffic_model']['emission_probability']
-            tmodel = TrafficModel(states, start_p, trans_p, emit_p)
-
-            # now add in the keys needed for counting
-            # NOTE the tally server sent these, but we ignored them above
-            for label in tmodel.get_counter_labels():
-                # XXX TODO FIXME these sigmas should not be 0
-                dc_counters[label] = {'bins': [[0.0, float("inf")]], 'sigma': 0.0}
+            traffic_model_config = config['traffic_model']
 
         # The aggregator doesn't care about the DC threshold
-        self.aggregator = Aggregator(dc_counters, tmodel, config['sharekeepers'], config['noise_weight'], counter_modulus(), self.config['event_source'])
+        self.aggregator = Aggregator(dc_counters, traffic_model_config, config['sharekeepers'], config['noise_weight'], counter_modulus(), self.config['event_source'])
 
         defer_time = config['defer_time'] if 'defer_time' in config else 0.0
         logging.info("got start command from tally server, starting aggregator in {}".format(format_delay_time_wait(defer_time, 'at')))
@@ -298,14 +281,19 @@ class Aggregator(ReconnectingClientFactory):
     send results for tallying
     '''
 
-    def __init__(self, counters, traffic_model, sk_uids,
+    def __init__(self, counters, traffic_model_config, sk_uids,
                  noise_weight, modulus, tor_control_port):
         self.secure_counters = SecureCounters(counters, modulus)
-        self.traffic_model = traffic_model
         self.collection_counters = counters
         # we can't generate the noise yet, because we don't know the
         # DC fingerprint
         self.secure_counters.generate_blinding_shares(sk_uids)
+
+        # the traffic model is optional
+        self.traffic_model = None
+        if traffic_model_config is not None:
+            self.traffic_model = TrafficModel(traffic_model_config)
+
         self.noise_weight_config = noise_weight
         self.noise_weight_value = None
 

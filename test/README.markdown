@@ -49,7 +49,7 @@ If you have a local privcount-patched Tor instance on control port 9050, you can
 
 Start the event server that will supply events to the data collector:
 
-    zcat events2.txt.gz | privcount inject --port 20003 --simulate --log -
+    gzip -c -d events2.txt.gz | privcount inject --port 20003 --simulate --log -
 
 Start the PrivCount components:
 

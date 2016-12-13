@@ -5,13 +5,22 @@ Created on Dec 11, 2016
 '''
 from math import log
 
+from privcount.counter import register_dynamic_counter, BYTES_EVENT
+
+def check_traffic_model_config(model_config):
+    traffic_model_valid = True
+    for k in ['states', 'emission_probability', 'transition_probability', 'start_probability']:
+        if k not in model_config:
+            traffic_model_valid = False
+    return traffic_model_valid
+
 class TrafficModel(object):
     '''
     A class that represents a hidden markov model (HMM).
     See `test/traffic.model.json` for a simple traffic model that this class can represent.
     '''
 
-    def __init__(self, states, start_p, trans_p, emit_p):
+    def __init__(self, model_config):
         '''
         Initialize the model with a set of states, probabilities for starting in each of those
         states, probabilities for transitioning between those states, and proababilities of emitting
@@ -20,20 +29,27 @@ class TrafficModel(object):
         For us, the states very loosely represent if the node is transmitting or pausing.
         The events represent if we saw an outbound or inbound packet while in each of those states.
         '''
-        self.states = states
-        self.start_p = start_p
-        self.trans_p = trans_p
-        self.emit_p = emit_p
+        if not check_traffic_model_config(model_config):
+            return None
 
-    def get_counter_labels(self):
+        self.config = model_config
+        self.states = self.config['states']
+        self.start_p = self.config['start_p']
+        self.trans_p = self.config['trans_p']
+        self.emit_p = self.config['emit_p']
+
+    def register_counters(self):
+        for label in self.get_dynamic_counter_labels():
+            register_dynamic_counter(label, { BYTES_EVENT })
+
+    def get_dynamic_counter_labels(self):
         '''
-        Return the set of counters that should be counted for this model.
-        We should count the following, states and packet directions:
-          + the total number of emissions
-          + the total delay between packet transmission events
-          + the total transitions
+        Return the set of counters that should be counted for this model,
+        but only those whose name depends on the traffic model.
+        Use get_counter_labels() to get the set of all counters used to
+        count this traffic model.
         '''
-        labels = ["TrafficModelTotalEmissions", "TrafficModelTotalDelay", "TrafficModelTotalTransitions"]
+        labels = []
         for state in self.emit_p:
             for direction in self.emit_p[state]:
                 labels.append("TrafficModelTotalEmissions_{}{}".format(state, direction))
@@ -42,6 +58,19 @@ class TrafficModel(object):
             for dst_state in self.trans_p[src_state]:
                 labels.append("TrafficModelTotalTransitions_{}_{}".format(src_state, dst_state))
         return labels
+
+    def get_all_counter_labels(self):
+        '''
+        Return the set of counters that should be counted for this model.
+        We should count the following, for all states and packet directions:
+          + the total number of emissions
+          + the total delay between packet transmission events
+          + the total transitions
+        '''
+        dynamic_labels = self.get_dynamic_counter_labels()
+        static_labels = ["TrafficModelTotalEmissions", "TrafficModelTotalDelay", "TrafficModelTotalTransitions"]
+        return static_labels + dynamic_labels
+
 
     def run_viterbi(self, obs):
         '''

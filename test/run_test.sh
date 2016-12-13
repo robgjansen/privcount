@@ -78,7 +78,7 @@ mv privcount.* old/ || true
 
 # Then run the injector, ts, sk, and dc
 echo "Launching injector, tally server, share keeper, and data collector..."
-zcat events2.txt.gz | privcount inject --port 20003 --simulate --log - &
+gzip -c -d events2.txt.gz | privcount inject --port 20003 --simulate --log - &
 privcount ts config.yaml &
 privcount sk config.yaml &
 privcount dc config.yaml &

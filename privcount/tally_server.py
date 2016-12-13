@@ -22,7 +22,7 @@ from privcount.log import log_error, format_elapsed_time_since, format_elapsed_t
 from privcount.node import PrivCountServer, continue_collecting, log_tally_server_status
 from privcount.protocol import PrivCountServerProtocol
 from privcount.statistics_noise import get_noise_allocation
-from privcount.traffic_model import TrafficModel
+from privcount.traffic_model import TrafficModel, check_traffic_model_config
 from privcount.util import normalise_path, choose_secret_handshake_path
 
 # for warning about logging function and format # pylint: disable=W1202
@@ -206,6 +206,35 @@ class TallyServer(ServerFactory, PrivCountServer):
                 ts_conf['noise'] = {}
                 ts_conf['noise']['counters'] = conf['counters']
 
+            # if we are counting a traffic model, import the model from file
+            if 'traffic_model' in ts_conf:
+                ts_conf['traffic_model'] = normalise_path(ts_conf['traffic_model'])
+                assert os.path.exists(os.path.dirname(ts_conf['traffic_model']))
+
+                # import and validate the model
+                with open(ts_conf['traffic_model'], 'r') as fin:
+                    traffic_model_conf = json.load(fin)
+                assert check_traffic_model_config(traffic_model_conf)
+
+                # store the config so we can transfer it later
+                ts_conf['traffic_model'] = traffic_model_conf
+
+                # get an object and register the dynamic counters
+                tmodel = TrafficModel(traffic_model_conf)
+
+                # supplying a traffic model implies that the tally server
+                # wants to enable all counters associated with that model
+                # register the dynamic counter labels that will be needed for this model
+                tmodel.register_counters()
+
+                # inject the traffic model counter and noise config
+                for label in tmodel.get_all_counter_labels():
+                    # append these to the manually specified counters
+                    ts_conf['counters'][label] = {'bins': [[0.0, float("inf")]]}
+                    # XXX FIXME the following values should be non-zero
+                    # TODO support needs to be added to statistics_noise.py
+                    ts_conf['noise']['counters'][label] = {'epsilon': 0.0, 'sensitivity': 0, 'expected_noise_ratio': 0.0, 'sigma': 0.0, 'estimated_value': 0.0}
+
             # an optional noise allocation results file
             if 'allocation' in ts_conf:
                 ts_conf['allocation'] = normalise_path(ts_conf['allocation'])
@@ -247,19 +276,6 @@ class TallyServer(ServerFactory, PrivCountServer):
             else:
                 ts_conf['results'] = normalise_path('./')
             assert os.path.exists(ts_conf['results'])
-
-            # if we are counting a traffic model, import the model from file
-            if 'traffic_model' in ts_conf:
-                ts_conf['traffic_model'] = normalise_path(ts_conf['traffic_model'])
-                assert os.path.exists(os.path.dirname(ts_conf['traffic_model']))
-
-                inf = open(ts_conf['traffic_model'], 'r')
-                model = json.load(inf)
-                inf.close()
-                assert 'states' in model
-                assert 'start_probability' in model
-                assert 'transition_probability' in model
-                assert 'emission_probability' in model
 
             # the state file
             ts_conf['state'] = normalise_path(ts_conf['state'])
@@ -498,26 +514,17 @@ class TallyServer(ServerFactory, PrivCountServer):
         for uid in sk_uids:
             sk_public_keys[uid] = self.clients[uid]['public_key']
 
-        counters = self.config['counters']
-        model = None
+        traffic_model_conf = None
         if 'traffic_model' in self.config:
-            # load the model json file
-            inf = open(self.config['traffic_model'], 'r')
-            model = json.load(inf)
-            inf.close()
-
-            # add all of the counters needed to count the model states
-            for label in TrafficModel(model['states'], model['start_probability'], model['transition_probability'], model['emission_probability']).get_counter_labels():
-                # NOTE this does not have sigmas on purpose since it is only used for tallies
-                counters[label] = {'bins': [[0.0, float("inf")]]}
+            traffic_model_conf = self.config['traffic_model']
 
         # clients don't provide some context until the end of the phase
         # so we'll wait and pass the client context to collection_phase just
         # before stopping it
 
         self.collection_phase = CollectionPhase(self.config['collect_period'],
-                                                counters,
-                                                model,
+                                                self.config['counters'],
+                                                traffic_model_conf,
                                                 self.config['noise'],
                                                 self.config['noise_weight'],
                                                 self.config['dc_threshold'],
@@ -597,7 +604,7 @@ class TallyServer(ServerFactory, PrivCountServer):
 
 class CollectionPhase(object):
 
-    def __init__(self, period, counters_config, traffic_model, noise_config,
+    def __init__(self, period, counters_config, traffic_model_config, noise_config,
                  noise_weight_config, dc_threshold_config, sk_uids,
                  sk_public_keys, dc_uids, modulus, clock_padding,
                  tally_server_config):
@@ -605,7 +612,7 @@ class CollectionPhase(object):
         self.period = period
         # the counter bins
         self.counters_config = counters_config
-        self.traffic_model = traffic_model
+        self.traffic_model_config = traffic_model_config
         self.noise_config = noise_config
         self.noise_weight_config = noise_weight_config
         self.dc_threshold_config = dc_threshold_config
@@ -791,12 +798,12 @@ class CollectionPhase(object):
             for sk_uid in self.sk_public_keys:
                 config['sharekeepers'][sk_uid] = b64encode(self.sk_public_keys[sk_uid])
             config['counters'] = self.counters_config
+            if self.traffic_model_config is not None:
+                config['traffic_model'] = self.traffic_model_config
             config['noise'] = self.noise_config
             config['noise_weight'] = self.noise_weight_config
             config['dc_threshold'] = self.dc_threshold_config
             config['defer_time'] = self.clock_padding
-            if self.traffic_model is not None:
-                config['traffic_model'] = self.traffic_model
             config['collect_period'] = self.period
             logging.info("sending start comand with {} counters and requesting {} shares to data collector {}"
                          .format(len(config['counters']),
@@ -807,6 +814,8 @@ class CollectionPhase(object):
         elif self.state == 'starting_sks' and client_uid in self.sk_uids:
             config['shares'] = self.encrypted_shares[client_uid]
             config['counters'] = self.counters_config
+            if self.traffic_model_config is not None:
+                config['traffic_model'] = self.traffic_model_config
             config['noise'] = self.noise_config
             config['noise_weight'] = self.noise_weight_config
             config['dc_threshold'] = self.dc_threshold_config

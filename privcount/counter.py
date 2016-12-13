@@ -209,10 +209,7 @@ PRIVCOUNT_COUNTER_EVENTS = {
 'TrafficModelTotalEmissions' : { BYTES_EVENT },
 'TrafficModelTotalDelay' : { BYTES_EVENT },
 'TrafficModelTotalTransitions' : { BYTES_EVENT },
-## TODO how should these dynaically generated labels be added?
-##'TrafficModelTotalTransitions_{}_{}'.format(state, next_state) : { BYTES_EVENT },
-# these counters depend on stream end
-# they are updated in _handle_stream_event
+# NOTE: model-specific counters are added in register_dynamic_counter
 'StreamsAll' : { STREAM_EVENT },
 'StreamBytesAll' : { STREAM_EVENT },
 'StreamBytesOutAll' : { STREAM_EVENT },

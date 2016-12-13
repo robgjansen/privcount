@@ -11,6 +11,7 @@ from time import time
 from privcount.counter import check_counters_config, check_noise_weight_config, combine_counters, CollectionDelay, float_accuracy, add_counter_limits_to_config
 from privcount.log import format_delay_time_until, format_elapsed_time_since
 from privcount.statistics_noise import DEFAULT_SIGMA_TOLERANCE
+from privcount.traffic_model import TrafficModel, check_traffic_model_config
 from privcount.util import normalise_path
 
 def get_remaining_rounds(num_phases, continue_config):
@@ -281,6 +282,15 @@ class PrivCountClient(PrivCountNode):
             'collect_period' not in start_config):
             logging.warning("start command from tally server cannot be completed due to missing data")
             return None
+
+        # a traffic model is optional
+        if 'traffic_model' in start_config:
+            # if a traffic model was given but is not valid, fail
+            if not check_traffic_model_config(start_config['traffic_model']):
+                return None
+
+            # regsiter the dependencies for the dynamic counter labels
+            TrafficModel(start_config['traffic_model']).register_counters()
 
         # if the counters don't pass the validity checks, fail
         if not check_counters_config(start_config['counters'],
