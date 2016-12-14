@@ -3,21 +3,32 @@
     "Blabbing": {
       "+": [
         0.8,
-        0.05
+        2.65,
+        0.83
       ],
       "-": [
         0.2,
-        0.001
+        6.56,
+        0.83
       ]
     },
     "Thinking": {
       "+": [
         0.95,
-        0.0001
+        8.86,
+        0.83
       ],
       "-": [
         0.05,
-        0.0001
+        8.86,
+        0.83
+      ]
+    },
+    "End": {
+      "F": [
+        1.0,
+        11.17,
+        1.66
       ]
     }
   },
@@ -27,7 +38,8 @@
   },
   "states": [
     "Blabbing",
-    "Thinking"
+    "Thinking",
+    "End"
   ],
   "transition_probability": {
     "Blabbing": {
@@ -35,8 +47,9 @@
       "Thinking": 0.3
     },
     "Thinking": {
-      "Blabbing": 0.4,
-      "Thinking": 0.6
+      "Blabbing": 0.35,
+      "Thinking": 0.55,
+      "End": 0.10
     }
   }
 }
