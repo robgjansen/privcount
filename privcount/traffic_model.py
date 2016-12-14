@@ -64,9 +64,11 @@ class TrafficModel(object):
                 labels.append("TrafficModelTotalSquaredLogDelay_{}{}".format(state, direction))
         for src_state in self.trans_p:
             for dst_state in self.trans_p[src_state]:
-                labels.append("TrafficModelTotalTransitions_{}_{}".format(src_state, dst_state))
+                if self.trans_p[src_state][dst_state] > 0.0:
+                    labels.append("TrafficModelTotalTransitions_{}_{}".format(src_state, dst_state))
         for state in self.start_p:
-            labels.append("TrafficModelTotalTransitions_START_{}".format(state))
+            if self.start_p[state] > 0.0:
+                labels.append("TrafficModelTotalTransitions_START_{}".format(state))
 
         return labels
 

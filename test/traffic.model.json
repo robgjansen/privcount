@@ -50,6 +50,7 @@
       "Blabbing": 0.35,
       "Thinking": 0.55,
       "End": 0.10
-    }
+    },
+    "End": {}
   }
 }
