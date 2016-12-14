@@ -207,8 +207,9 @@ PRIVCOUNT_COUNTER_EVENTS = {
 # these counters depend on bytes transferred event
 # they are updated in _handle_bytes_event
 'TrafficModelTotalEmissions' : { BYTES_EVENT },
-'TrafficModelTotalDelay' : { BYTES_EVENT },
 'TrafficModelTotalTransitions' : { BYTES_EVENT },
+'TrafficModelTotalLogDelay' : { BYTES_EVENT },
+'TrafficModelTotalSquaredLogDelay' : { BYTES_EVENT },
 # NOTE: model-specific counters are added in register_dynamic_counter
 'StreamsAll' : { STREAM_EVENT },
 'StreamBytesAll' : { STREAM_EVENT },
