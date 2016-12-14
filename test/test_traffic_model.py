@@ -35,16 +35,11 @@ inf = open(MODEL_FILENAME, 'r')
 model = json.load(inf)
 inf.close()
 
-# the model components
-states = model['states']
-start_p = model['start_probability']
-trans_p = model['transition_probability']
-emit_p = model['emission_probability']
-
-tmod = TrafficModel(states, start_p, trans_p, emit_p)
+tmod = TrafficModel(model)
+assert tmod
 
 print "Here is the list of all counter labels:"
-for label in sorted(tmod.get_counter_labels()):
+for label in sorted(tmod.get_all_counter_labels()):
     print label
 print ""
 
