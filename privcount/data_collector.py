@@ -763,9 +763,15 @@ class Aggregator(ReconnectingClientFactory):
             '''
 
             for i in xrange(num_packets):
-                (dir_code, delay) = observed_packet_delays[i] # delay is in microseconds
                 state = likliest_states[i]
-                ldelay = int(math.log(delay))
+
+                # delay is in microseconds
+                (dir_code, delay) = observed_packet_delays[i]
+
+                # delay of 0 indicates the packets were observed at the same time
+                # log(x=0) is undefined, and log(x<1) is negative
+                # we don't want to count negatives, so override delay if needed
+                ldelay = 0 if delay < 1 else int(math.log(delay))
 
                 self.secure_counters.increment("TrafficModelTotalEmissions", 1, num_increments=1)
                 label = "TrafficModelTotalEmissions_{}{}".format(state, dir_code)
