@@ -34,9 +34,9 @@ class TrafficModel(object):
 
         self.config = model_config
         self.states = self.config['states']
-        self.start_p = self.config['start_p']
-        self.trans_p = self.config['trans_p']
-        self.emit_p = self.config['emit_p']
+        self.start_p = self.config['start_probability']
+        self.trans_p = self.config['transition_probability']
+        self.emit_p = self.config['emission_probability']
 
     def register_counters(self):
         for label in self.get_dynamic_counter_labels():

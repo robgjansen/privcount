@@ -250,6 +250,13 @@ class TallyServer(ServerFactory, PrivCountServer):
                         yaml.dump(ts_conf['noise'], fout,
                                   default_flow_style=False)
 
+            # XXX temp start
+            if 'traffic_model' in ts_conf:
+                # FIXME these values got removed in get_noise_allocation?
+                for label in TrafficModel(ts_conf['traffic_model']).get_all_counter_labels():
+                    ts_conf['noise']['counters'][label] = {'epsilon': 0.0, 'sensitivity': 0, 'expected_noise_ratio': 0.0, 'sigma': 0.0, 'estimated_value': 0.0}
+            # XXX temp end
+
             # now we have bins and sigmas (and perhaps additional calculation
             # info along with the sigmas)
             # perform sanity checks
@@ -1005,6 +1012,9 @@ class CollectionPhase(object):
             tally_was_successful = tallied_counter.tally_counters(
                 self.final_counts.values())
 
+        begin = int(round(self.starting_ts))
+        end = int(round(self.stopping_ts))
+
         # keep going, we want the context for debugging
         if not tally_was_successful:
             logging.warning("problem tallying counters, did all counters and bins match!?")
@@ -1013,8 +1023,6 @@ class CollectionPhase(object):
 
             # For backwards compatibility, write out a "tallies" file
             # This file only has the counts
-            begin = int(round(self.starting_ts))
-            end = int(round(self.stopping_ts))
             filepath = os.path.join(path_prefix,
                                     "privcount.tallies.{}-{}.json"
                                     .format(begin, end))

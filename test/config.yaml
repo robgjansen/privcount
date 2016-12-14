@@ -3,7 +3,7 @@ tally_server:
     state: 'privcount.ts.state' # path to file where persistent state will be stored
     counters: './counters.bins.yaml' # path to a yaml file containing our counter bin configurations
     # traffic model is optional - only use if we want to enable traffic model learning
-    #traffic_model: 'traffic.model.json' # path to the traffic model, if we want to learn
+    traffic_model: 'traffic.model.json' # path to the traffic model, if we want to learn
     # Either noise or sigmas must be provided (if noise is present, sigmas is ignored)
     noise: './counters.noise.yaml' # path to a yaml file containing noise allocation parameters
     #sigmas: './counters.sigmas.yaml' # path to a yaml file containing pre-calculated sigmas

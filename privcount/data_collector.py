@@ -656,7 +656,6 @@ class Aggregator(ReconnectingClientFactory):
 
         elif event_code == 'PRIVCOUNT_STREAM_BYTES_TRANSFERRED':
             # 'PRIVCOUNT_STREAM_BYTES_TRANSFERRED', ChanID, CircID, StreamID, BW, Direction, Time
-            items = [v.strip() for v in line_remaining.split(' ', 6)]
             if len(items) == 6:
                 self._handle_bytes_event(items[0:6])
 
