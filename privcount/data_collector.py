@@ -751,11 +751,13 @@ class Aggregator(ReconnectingClientFactory):
 
             example observations = [('+', 20), ('+', 10), ('+',50), ('+',1000)]
             example viterbi result: Blabbing Blabbing Blabbing Thinking
-            then count the following 3:
+            then count the following 4:
               - increment 1 for state/observation match:
                 Blabbing+, Blabbing+, Blabbing+, Thinking+
-              - increment x where x is delay for each state/observation match:
-                Blabbing+: 20, Blabbing+: 10, Blabbing+: 50, Thinking+: 1000
+              - increment x where x is log(delay) for each state/observation match:
+                Blabbing+: 2, Blabbing+: 2, Blabbing+: 3, Thinking+: 6
+              - increment x*x where x is log(delay) for each state/observation match:
+                Blabbing+: 4, Blabbing+: 4, Blabbing+: 9, Thinking+: 36
               - increment 1 for each state-to-state transition:
                 BlabbingBlabbing, BlabbingBlabbing, BlabbingThinking
             '''
@@ -763,15 +765,23 @@ class Aggregator(ReconnectingClientFactory):
             for i in xrange(num_packets):
                 (dir_code, delay) = observed_packet_delays[i] # delay is in microseconds
                 state = likliest_states[i]
+                ldelay = int(math.log(delay))
 
                 self.secure_counters.increment("TrafficModelTotalEmissions", 1, num_increments=1)
                 label = "TrafficModelTotalEmissions_{}{}".format(state, dir_code)
                 self.secure_counters.increment(label, 1, num_increments=1)
 
-                self.secure_counters.increment("TrafficModelTotalDelay", 1, num_increments=delay)
-                label = "TrafficModelTotalDelay_{}{}".format(state, dir_code)
-                self.secure_counters.increment(label, 1, num_increments=delay)
+                self.secure_counters.increment("TrafficModelTotalLogDelay", 1, num_increments=ldelay)
+                label = "TrafficModelTotalLogDelay_{}{}".format(state, dir_code)
+                self.secure_counters.increment(label, 1, num_increments=ldelay)
 
+                self.secure_counters.increment("TrafficModelTotalSquaredLogDelay", 1, num_increments=ldelay*ldelay)
+                label = "TrafficModelTotalSquaredLogDelay_{}{}".format(state, dir_code)
+                self.secure_counters.increment(label, 1, num_increments=ldelay*ldelay)
+
+                if i == 0: # track starting transitions
+                    label = "TrafficModelTotalTransitions_START_{}".format(state)
+                    self.secure_counters.increment(label, 1, num_increments=1)
                 if (i+1) < num_states:
                     next_state = likliest_states[i+1]
                     self.secure_counters.increment("TrafficModelTotalTransitions", 1, num_increments=1)
