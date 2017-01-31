@@ -14,12 +14,15 @@ from twisted.internet.protocol import ServerFactory
 from twisted.internet.error import ReactorNotRunning
 
 from privcount.config import normalise_path
-from privcount.connection import listen
+from privcount.connection import listen, stopListening
 from privcount.protocol import TorControlServerProtocol
 
-DEFAULT_PRIVCOUNT_INJECT_SOCKET = '/tmp/privcount-inject'
+# set the log level
+#logging.basicConfig(level=logging.DEBUG)
 
-listener = None
+# We can't have the injector listen on a port by default, because it might
+# conflict with a running tor instance
+DEFAULT_PRIVCOUNT_INJECT_SOCKET = '/tmp/privcount-inject'
 
 class PrivCountDataInjector(ServerFactory):
 
@@ -31,6 +34,8 @@ class PrivCountDataInjector(ServerFactory):
         self.protocol = None
         self.event_file = None
         self.last_time_end = 0.0
+        self.injecting = False
+        self.listeners = None
 
     def startFactory(self):
         # TODO
@@ -45,10 +50,22 @@ class PrivCountDataInjector(ServerFactory):
         self.protocol = TorControlServerProtocol(self)
         return self.protocol
 
+    def set_listeners(self, listener_list):
+        '''
+        Set the listeners for this factory to listener_list
+        '''
+        # Since the listeners hold a reference to the factory, this causes a
+        # (temporary) reference loop. Perhaps there is a better way of
+        # retrieving all the listeners for a factory?
+        self.listeners = listener_list
+
     def start_injecting(self):
-        if listener is not None:
+        self.injecting = True
+        if self.listeners is not None:
             logging.info("Injector is no longer listening")
-            listener.stopListening()
+            stopListening(self.listeners)
+            # This breaks the reference loop
+            self.listeners = None
         if self.do_pause:
             logging.info("We will pause between the injection of each event to simulate actual event inter-arrival times, so this may take a while")
 
@@ -59,9 +76,27 @@ class PrivCountDataInjector(ServerFactory):
         self._inject_events()
 
     def stop_injecting(self):
+        if not self.injecting:
+            logging.debug("Ignoring request to stop injecting when injection is not in progress")
+            return
+        self.injecting = False
+        if self.listeners is not None:
+            stopListening(self.listeners)
+            self.listeners = None
+        # close the event log file
         if self.event_file is not None:
             self.event_file.close()
             self.event_file = None
+        # close the connection from our server side
+        if self.protocol is not None and self.protocol.transport is not None:
+            self.protocol.transport.loseConnection()
+        # stop the reactor
+        try:
+            # we should no longer be listening, so the reactor should end here
+            reactor.stop()
+        except ReactorNotRunning:
+            # it's ok if the reactor stopped before we told it to
+            pass
 
     def _get_line(self):
         if self.event_file == None:
@@ -93,15 +128,14 @@ class PrivCountDataInjector(ServerFactory):
         while True:
             line = self._get_line()
             if line is None:
-                # close the connection from our server side
-                if self.protocol is not None and self.protocol.transport is not None:
-                    self.protocol.transport.loseConnection()
-                try:
-                    # we should no longer be listening, so the reactor should end here
-                    reactor.stop()
-                except ReactorNotRunning:
-                    # it's ok if the reactor stopped before we told it to
-                    pass
+                # twisted's loseConnection says:
+                # "Close my connection, after writing all pending data"
+                # But it often closes the connection before sending data.
+                # So we allow the event loop to run before we stop injecting
+                # otherwise, the connection may be closed before the final line
+                # is received
+                # A zero delay is sufficient for localhost
+                reactor.callLater(0.0, self.stop_injecting) # pylint: disable=E1101
                 return
 
             msg = line.strip()
@@ -118,12 +152,18 @@ class PrivCountDataInjector(ServerFactory):
                 do_wait = True if self.last_time_end != 0.0 and wait_time > 0.0 else False
                 self.last_time_end = this_time_end
 
-            if do_wait:
-                # we cant sleep or twisted wont work correctly, we must use callLater instead
-                reactor.callLater(wait_time, self._flush_later, msg) # pylint: disable=E1101
-                return
-            else:
-                self._flush_now(msg)
+            # ensure wait_time is sensible
+            if wait_time < 0.0:
+                logging.warning("Out of sequence event times")
+                wait_time = 0.0
+
+            # we can't dump the entire file at once: it fills up the buffers
+            # without giving the twisted event loop time to flush them
+            # instead, use callLater with a zero delay
+            # we cant sleep or twisted wont work correctly, we must use callLater instead
+            reactor.callLater(wait_time, self._flush_later, msg) # pylint: disable=E1101
+            # _flush_later will inject the next event when called
+            return
 
     def _get_event_times(self, msg):
         parts = msg.split()
@@ -174,6 +214,7 @@ def run_inject(args):
     if args.unix is not None:
         listener_config['unix']= args.unix
     listeners = listen(injector, listener_config, ip_version_default = [4, 6])
+    injector.set_listeners(listeners)
     reactor.run()
 
 def add_inject_args(parser):
@@ -181,7 +222,7 @@ def add_inject_args(parser):
                         help="port on which to listen for PrivCount connections(default: no IP listener)",
                         required=False)
     parser.add_argument('-i', '--ip',
-                        help="IPv4 or IPv6 address on which to listen for PrivCount connections (default: both 127.0.0.1 and ::1)",
+                        help="IPv4 or IPv6 address on which to listen for PrivCount connections (default: both 127.0.0.1 and ::1, if a port is specified)",
                         required=False)
     parser.add_argument('-u', '--unix',
                         help="Unix socket on which to listen for PrivCount connections (default: '{}')"
@@ -194,8 +235,7 @@ def add_inject_args(parser):
                         default='-')
     parser.add_argument('-s', '--simulate',
                         action='store_true',
-                        help="add pauses between each event injection to simulate the inter-arrival times from the source data",
-                        default=True)
+                        help="add pauses between each event injection to simulate the inter-arrival times from the source data")
     parser.add_argument('--prune-before',
                         help="do not inject events that occurred before the given unix timestamp",
                         default=0)

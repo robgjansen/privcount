@@ -13,6 +13,9 @@ from twisted.internet.protocol import ReconnectingClientFactory
 from privcount.connection import connect, transport_info
 from privcount.protocol import TorControlClientProtocol, get_valid_events
 
+# set the log level
+#logging.basicConfig(level=logging.DEBUG)
+
 ## Usage:
 #
 ## Setup
@@ -32,7 +35,8 @@ from privcount.protocol import TorControlClientProtocol, get_valid_events
 ## Testing
 # source venv/bin/activate
 # python test/test_tor_ctl_event.py
-## wait a few minutes for the first events to arrive
+## wait a few minutes for the first events to arrive, or just terminate tor
+## using a SIGINT after it has made some connections
 
 # The default control socket path used by Debian
 TOR_CONTROL_PATH = '/var/run/tor/control'
@@ -83,7 +87,7 @@ class TorCtlClient(ReconnectingClientFactory):
     def handle_event(self, event):
         '''
         Called when an event occurs.
-        event is a space-separated list of tokens from the event line
+        event is a list of tokens from the event line, split on spaces
         '''
         if self.nickname is None:
             nickname = ""

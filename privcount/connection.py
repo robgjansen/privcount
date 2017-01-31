@@ -112,6 +112,17 @@ def listen_ip(factory, config, ip_local_default=True, ip_version_default=4):
                                                        interface=ip))
     return _unlistify(listeners)
 
+def stopListening(listener):
+    '''
+    Make listener stop listening.
+    If listener is a list, stop all listeners in the list.
+    '''
+    # upgrade the listener to a list if it has been passed as a single item
+    listener = _listify(listener)
+    # now process the list
+    for item in listener:
+        item.stopListening()
+
 def connect(factory, config, ip_local_default=True, ip_version_default=4):
     '''
     Set up factory to connect to service, based on config, which is a
@@ -201,7 +212,8 @@ def connect_ip(factory, config, ip_local_default=True, ip_version_default=4):
 
 def disconnect(connector):
     '''
-    Disconnect all connectors in connector.
+    Disconnect connector.
+    If connector is a list, disconnect all connectors in the list.
     '''
     # upgrade the connector to a list if it has been passed as a single item
     connector = _listify(connector)

@@ -67,31 +67,79 @@ python ../privcount/statistics_noise.py
 # Requires a local privcount-patched Tor instance
 #python test_tor_ctl_event.py
 
+# Execute this command to produce a numeric unix timestamp in seconds
+TIMESTAMP_COMMAND="date +%s"
+DATE_COMMAND="date"
 # Record how long the tests take to run
-date
-STARTSEC="`date +%s`"
+"$DATE_COMMAND"
+STARTSEC="`$TIMESTAMP_COMMAND`"
 
 # Move aside the old result files
 echo "Moving old results files to '$PRIVCOUNT_DIRECTORY/test/old' ..."
 mkdir -p old
-mv privcount.* old/ || true
+# Save the commands for re-use during multiple round tests
+MOVE_JSON_COMMAND="mv privcount.*.json old/"
+MOVE_PDF_COMMAND="mv privcount.*.pdf old/"
+MOVE_LOG_COMMAND="mv privcount.*.log old/"
+# Clean up before running the test
+$MOVE_JSON_COMMAND || true
+# If the plot libraries are not installed, this will always fail
+$MOVE_PDF_COMMAND 2> /dev/null || true
+$MOVE_LOG_COMMAND || true
 
+# Injector commands for re-use
+# We can either test --simulate, and get partial data, or get full data
+# It's better to get full data
 GZIP_CMD="gzip -c -d events2.txt.gz"
-INJECTOR_PORT_CMD="privcount inject --simulate --port 20003 --log -"
-INJECTOR_UNIX_CMD="privcount inject --simulate --unix /tmp/privcount-inject --log -"
+INJECTOR_BASE_CMD="privcount inject --log -"
+INJECTOR_PORT_CMD="$INJECTOR_BASE_CMD --port 20003"
+INJECTOR_UNIX_CMD="$INJECTOR_BASE_CMD --unix /tmp/privcount-inject"
 
-# Then run the injector, ts, sk, and dc
+# Generate a log file name
+# Usage:
+# > `log_file_name privcount_command timestamp` 2>&1
+# 2>&1 | tee `log_file_name privcount_command timestamp`
+# Takes two arguments: the privcount command (inject, ts, sk, dc) and the unix
+# timestamp for the log
+# Outputs a string containing the log file name
+# Doesn't handle arguments with spaces
+function log_file_name() {
+  PRIVCOUNT_COMMAND="$1"
+  FILE_TIMESTAMP="$2"
+  echo "privcount.$PRIVCOUNT_COMMAND.$FILE_TIMESTAMP.log"
+}
+
+# Save a command's output in a log file
+# Usage:
+# privcount privcount_command args 2&>1 | `save_to_log privcount_command timestamp`
+# Takes two arguments: the privcount command (inject, ts, sk, dc) and the unix
+# timestamp for the log
+# Outputs a command that logs the output of a command to a file, and also
+# echoes it to standard output
+# Doesn't handle arguments with spaces
+function save_to_log() {
+  SAVE_LOG_COMMAND="tee"
+  PRIVCOUNT_COMMAND="$1"
+  FILE_TIMESTAMP="$2"
+  FILE_NAME=`log_file_name "$PRIVCOUNT_COMMAND" "$FILE_TIMESTAMP"`
+  echo "$SAVE_LOG_COMMAND $FILE_NAME"
+}
+
+# Then run the ts, sk, dc, and injector
 echo "Launching injector (IP), tally server, share keeper, and data collector..."
-$GZIP_CMD | $INJECTOR_PORT_CMD &
-privcount ts config.yaml &
-privcount sk config.yaml &
-privcount dc config.yaml &
+# This won't match the timestamp logged by the TS, because the TS waits before
+# starting the round
+LOG_TIMESTAMP="$STARTSEC"
+privcount ts config.yaml 2>&1 | `save_to_log ts $LOG_TIMESTAMP` &
+privcount sk config.yaml 2>&1 | `save_to_log sk $LOG_TIMESTAMP` &
+privcount dc config.yaml 2>&1 | `save_to_log dc $LOG_TIMESTAMP` &
+ROUNDS=1
+$GZIP_CMD | $INJECTOR_PORT_CMD 2>&1 | `save_to_log inject.$ROUNDS $LOG_TIMESTAMP` &
 
 # Then wait for each job, terminating if any job produces an error
 # Ideally, we'd want to use wait, or wait $job, but that only checks one job
 # at a time, so continuing processes can cause the script to run forever
 echo "Waiting for PrivCount to finish..."
-ROUNDS=0
 JOB_STATUS=`jobs`
 echo "$JOB_STATUS"
 while echo "$JOB_STATUS" | grep -q "Running"; do
@@ -104,14 +152,15 @@ while echo "$JOB_STATUS" | grep -q "Running"; do
   fi
   # succeed if an outcome file is produced
   if [ -f privcount.outcome.*.json ]; then
-    if [ $[$ROUNDS+1] -lt $PRIVCOUNT_ROUNDS ]; then
+    if [ $ROUNDS -lt $PRIVCOUNT_ROUNDS ]; then
       echo "Moving round $ROUNDS results files to '$PRIVCOUNT_DIRECTORY/test/old' ..."
-      mv privcount.* old/ || true
+      $MOVE_JSON_COMMAND || true
+      # If the plot libraries are not installed, this will always fail
+      $MOVE_PDF_COMMAND 2> /dev/null || true
       ROUNDS=$[$ROUNDS+1]
       echo "Restarting injector (unix path) for round $ROUNDS..."
-      $GZIP_CMD | $INJECTOR_UNIX_CMD &
+      $GZIP_CMD | $INJECTOR_UNIX_CMD 2>&1 | `save_to_log inject.$ROUNDS $LOG_TIMESTAMP` &
     else
-      ROUNDS=$[$ROUNDS+1]
       break
     fi
   fi
@@ -121,32 +170,51 @@ while echo "$JOB_STATUS" | grep -q "Running"; do
 done
 
 # Measure how long the actual tests took
-ENDDATE=`date`
-ENDSEC="`date +%s`"
+ENDDATE="`$DATE_COMMAND`"
+ENDSEC="`$TIMESTAMP_COMMAND`"
 
 # And terminate all the privcount processes
 echo "Terminating privcount after $ROUNDS round(s)..."
 pkill -P $$
 
+# Symlink a timestamped file to a similarly-named "latest" file
+# Usage:
+# link_latest prefix suffix
+# Takes two arguments: the prefix and the suffix, in a filename like:
+# privcount.prefix.timestamp.suffix
+# Doesn't handle arguments with spaces
+function link_latest() {
+  PREFIX="$1"
+  SUFFIX="$2"
+  GLOB_PATTERN=privcount.$PREFIX.*.$SUFFIX
+  LATEST_NAME=privcount.$PREFIX.latest.$SUFFIX
+  if [ -f $GLOB_PATTERN ]; then
+    ln -s $GLOB_PATTERN $LATEST_NAME
+  else
+    echo "Error: No $PREFIX $SUFFIX file produced."
+    exit 1
+  fi
+}
+
 # If an outcome file was produced, keep a link to the latest file
-if [ -f privcount.outcome.*.json ]; then
-  ln -s privcount.outcome.*.json privcount.outcome.latest.json
-else
-  echo "Error: No outcome file produced."
-  exit 1
-fi
+link_latest outcome json
 
 # If a tallies file was produced, keep a link to the latest file, and plot it
-if [ -f privcount.tallies.*.json ]; then
-  ln -s privcount.tallies.*.json privcount.tallies.latest.json
+link_latest tallies json
+if [ -f privcount.tallies.latest.json ]; then
   echo "Plotting results..."
   # plot will fail if the optional dependencies are not installed
   # tolerate this failure, and shut down the privcount processes
-  privcount plot -d privcount.tallies.latest.json data || true
-else
-  echo "Error: No tallies file produced."
-  exit 1
+  privcount plot -d privcount.tallies.latest.json data 2>&1 | `save_to_log plot $LOG_TIMESTAMP` || true
 fi
+
+# If log files were produced, keep a link to the latest files
+link_latest ts log
+link_latest sk log
+link_latest dc log
+for round_number in `seq $PRIVCOUNT_ROUNDS`; do
+  link_latest inject.$round_number log
+done
 
 # Show the differences between the latest and old latest outcome files
 if [ -e privcount.outcome.latest.json -a \
@@ -157,15 +225,24 @@ if [ -e privcount.outcome.latest.json -a \
   # some minor numeric differences are expected due to noise, and due to
   # events falling before or after data collection stops in short runs
   diff --minimal \
-      -I "time" -I "[Cc]lock" -I "alive" -I "rtt" -I "Start" -I "Stop" \
-      -I "[Dd]elay" -I "Collect" -I "End" -I "peer" \
-      old/privcount.outcome.latest.json privcount.outcome.latest.json || true
+    -I "time" -I "[Cc]lock" -I "alive" -I "rtt" -I "Start" -I "Stop" \
+    -I "[Dd]elay" -I "Collect" -I "End" -I "peer" \
+    old/privcount.outcome.latest.json privcount.outcome.latest.json || true
 else
   # Since we need old/latest and latest, it takes two runs to generate the
   # first outcome file comparison
   echo "Warning: Outcomes files could not be compared."
   echo "$0 must be run twice to produce the first comparison."
 fi
+
+# Grep the warnings out of the log files
+# We don't diff the previous log files with the latest log files, because many
+# of the timestamps and other irrelevant details are different
+echo "Extracting warnings from privcount output..."
+grep -v -e NOTICE -e INFO -e DEBUG \
+  -e "seconds of user activity" -e "delay_period not specified" \
+  privcount.*.latest.log \
+  || true
 
 # Show how long it took
 echo "$ENDDATE"
