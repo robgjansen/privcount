@@ -199,6 +199,9 @@ function link_latest() {
 # If an outcome file was produced, keep a link to the latest file
 link_latest outcome json
 
+# If a traffic model file was produced, keep a link to the latest file
+link_latest traffic.model json
+
 # If a tallies file was produced, keep a link to the latest file, and plot it
 link_latest tallies json
 if [ -f privcount.tallies.latest.json ]; then

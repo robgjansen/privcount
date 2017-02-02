@@ -44,7 +44,6 @@ Run the unit tests: (optional)
 
 If you have a local privcount-patched Tor instance, you can test that it is returning PRIVCOUNT events:
 
-
     python test_tor_ctl_event.py <control-port-or-path>
 
 #### Integration Tests

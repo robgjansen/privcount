@@ -150,7 +150,7 @@ class TrafficModel(object):
         #print 'The steps of states are ' + ' '.join(opt) + ' with highest probability of %s' % max_prob
         return opt # list of highest probable states, in order
 
-    def update_from_counters(counters, trans_inertia=0.1, emit_inertia=0.1):
+    def update_from_counters(self, counters, trans_inertia=0.1, emit_inertia=0.1):
         '''
         Given the (noisy) aggregated counter values for this model, compute the updated model:
         + Transition probabilities - trans_p[s][t] = inertia*trans_p[s][t] + (1-inertia)*(tally result)
@@ -159,56 +159,93 @@ class TrafficModel(object):
           mu' <- emit_inertia * mu + (1-emit_inertia)*(log-delay sum / state_direction count)
           sigma' <- emit_inertia * sigma + (1-emit_inertia)*sqrt(avg. of squares - square of average)
         '''
-        obs_trans_p = { }
-        count = { }
-        for s in self.states:
-            count[s] = 0
-            obs_trans_p[s] = { }
-            for t in self.trans_p[s]:
-                st_label = "TrafficModelTotalTransitions_{}_{}".format(s,t)
-                count[s] += counters[st_label]
-                obs_trans_p[s][t] = counters[st_label]
-            for t in self.trans_p[s]:
-                obs_trans_p[s][t] = float(obs_trans_p[s][t])/count[s]
+        count, trans_count, obs_trans_p = {}, {}, {}
+        for src_state in self.trans_p:
+            count[src_state] = 0
+            trans_count[src_state] = {}
+            for dst_state in self.trans_p[src_state]:
+                trans_count[src_state][dst_state] = 0
+                src_dst_label = "TrafficModelTotalTransitions_{}_{}".format(src_state, dst_state)
+                if src_dst_label in counters:
+                    val = counters[src_dst_label]
+                    trans_count[src_state][dst_state] = val
+                    count[src_state] += val
 
-        obs_dir_emit_count = { }
-        obs_mu = { }
-        obs_sigma = { }
-        for s in self.states:
-            obs_dir_emit_count[s] = { }
-            obs_mu[s] = { }
-            for d in self.emit_p[s]:
-                sd_label = "TrafficModelTotalEmissions_{}{}".format(s,d)
-                obs_dir_emit_count[s][d] = counters[sd_label]
-                mu_label = "TrafficModelTotalLogDelay_{}{}".format(s,d)
-                obs_mu[s][d] = float(counters[mu_label])/obs_dir_emit_count[s][d]
-                ss_label = "TrafficModelTotalSquaredLogDelay_{}{}".format(s,d)
-                obs_var = float(counters[ss_label])/counters[sd_label] - obs_mu[s][d]**2
+            obs_trans_p[src_state] = {}
+            for dst_state in self.trans_p[src_state]:
+                if count[src_state] > 0:
+                    obs_trans_p[src_state][dst_state] = float(trans_count[src_state][dst_state])/float(count[src_state])
+                else:
+                    obs_trans_p[src_state][dst_state] = 0.0
+
+        obs_dir_emit_count, obs_mu, obs_sigma = {}, {}, {}
+        for state in self.emit_p:
+            obs_dir_emit_count[state], obs_mu[state], obs_sigma[state] = {}, {}, {}
+            for direction in self.emit_p[state]:
+                sd_label = "TrafficModelTotalEmissions_{}{}".format(state, direction)
+                if sd_label in counters:
+                    obs_dir_emit_count[state][direction] = counters[sd_label]
+                else:
+                    obs_dir_emit_count[state][direction] = 0
+
+                mu_label = "TrafficModelTotalLogDelay_{}{}".format(state, direction)
+                if mu_label in counters and obs_dir_emit_count[state][direction] > 0:
+                    obs_mu[state][direction] = float(counters[mu_label])/float(obs_dir_emit_count[state][direction])
+                else:
+                    obs_mu[state][direction] = 0.0
+
+                ss_label = "TrafficModelTotalSquaredLogDelay_{}{}".format(state, direction)
+                if ss_label in counters and sd_label in counters and counters[sd_label] > 0:
+                    obs_var = float(counters[ss_label])/float(counters[sd_label])
+                    obs_var -= obs_mu[state][direction]**2
+                else:
+                    obs_var = 0.0
+
                 # rounding errors or noise can make a small positive variance look negative
                 # setting a small "sane default" for this case
                 if obs_var < math.sqrt(0.01):
-                    obs_sigma[s][d] = 0.01
+                    obs_sigma[state][direction] = 0.01
                 else: # No rounding errors, do the math
-                    obs_sigma[s][d] = math.sqrt(obs_var)
+                    obs_sigma[state][direction] = math.sqrt(obs_var)
 
-        for s in self.states:
-            for t in self.trans_p[s]:
-                self.trans_p[s][t] = trans_inertia * self.trans_p[s][t] + (1-trans_inertia) * obs_trans_p[s][t]
+        for src_state in self.trans_p:
+            for dst_state in self.trans_p[src_state]:
+                self.trans_p[src_state][dst_state] = trans_inertia * self.trans_p[src_state][dst_state] + (1-trans_inertia) * obs_trans_p[src_state][dst_state]
 
-            for d in self.emit_p[s]:
-                (dp, mu, sigma) = self.emit_p[s][d]
-                self.emit_p[s][d] = (emit_inertia * dp + (1-emit_inertia)*float(obs_dir_emit_count[s][d])/count[s],
-                                     emit_inertia * mu + (1-emit_inertia)*obs_mu[s][d],
-                                     emit_inertia * sigma + (1-emit_inertia)*obs_sigma[s][d])
+            state = src_state
+            for direction in self.emit_p[state]:
+                (dp, mu, sigma) = self.emit_p[state][direction]
+
+                if state in count and count[state] > 0:
+                    dp_new = emit_inertia * dp + (1-emit_inertia)*float(obs_dir_emit_count[state][direction])/float(count[state])
+                else:
+                    dp_new = emit_inertia * dp
+                mu_new = emit_inertia * mu + (1-emit_inertia)*obs_mu[state][direction]
+                sigma_new = emit_inertia * sigma + (1-emit_inertia)*obs_sigma[state][direction]
+
+                self.emit_p[state][direction] = (dp_new, mu_new, sigma_new)
+
         # handle start probabilities.
-        s_label = { }
-        s_count = { }
+        s_label, s_count = {}, {}
         start_total = 0
-        for s in self.start_p:
-            s_label = "TrafficModelTotalTransitions_START_{}".format(s)
-            s_count[s] = counters[s_label]
-            start_total += s_count[s]
-        for s in self.start_p:
-            start_p[s] = trans_inertia * self.start_p[s] + (1-trans_inertia) * (float(s_count[s])/start_total)
+        for state in self.start_p:
+            if self.start_p[state] > 0.0:
+                s_label = "TrafficModelTotalTransitions_START_{}".format(state)
+                if s_label in counters:
+                    s_count[state] = counters[s_label]
+                else:
+                    s_count[state] = 0
+                start_total += s_count[state]
+        for state in self.start_p:
+            if start_total > 0.0:
+                self.start_p[state] = trans_inertia * self.start_p[state] + (1-trans_inertia) * float(s_count[state])/float(start_total)
+            else:
+                self.start_p[state] = trans_inertia * self.start_p[state]
 
-        return (self.states, self.start_p, self.trans_p, self.emit_p)
+        updated_model_config = {
+            'states': self.states,
+            'start_probability': self.start_p,
+            'transition_probability': self.trans_p,
+            'emission_probability': self.emit_p
+        }
+        return updated_model_config
