@@ -2,11 +2,18 @@
 tally_server:
     state: 'privcount.ts.state' # path to file where persistent state will be stored
     counters: './counters.bins.yaml' # path to a yaml file containing our counter bin configurations
-    # traffic model is optional - only use if we want to enable traffic model learning
-    traffic_model: 'traffic.model.json' # path to the traffic model, if we want to learn
     # Either noise or sigmas must be provided (if noise is present, sigmas is ignored)
     noise: './counters.noise.yaml' # path to a yaml file containing noise allocation parameters
     #sigmas: './counters.sigmas.yaml' # path to a yaml file containing pre-calculated sigmas
+    # The following two traffic model keys are only required if we want to enable traffic model learning
+    # The traffic_model file specifies the actual model in the format that PrivCount requires.
+    # From this model, PrivCount will extract all of the counters that are necessary to count
+    # in order to learn the model, and the asociated bins config.
+    traffic_model: 'traffic.model.json' # path to the traffic model, if we want to learn
+    # The traffic_noise file specifies the noise parameters for all of the counters in a special
+    # template style notation that will be expanded by PrivCount to cover all of the counters that
+    # are required to count the model.
+    traffic_noise: 'traffic.noise.yaml' # path to file specifying counter key templates and noise parameters
     # path to a yaml file where the noise allocation is written immediately after calculation. The noise allocation also forms part of the results context.
     allocation: './counters.allocation.yaml'
     noise_weight: # distribute noise among all machines / data collectors

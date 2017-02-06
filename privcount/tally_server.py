@@ -207,34 +207,57 @@ class TallyServer(ServerFactory, PrivCountServer):
                 ts_conf['noise'] = {}
                 ts_conf['noise']['counters'] = conf['counters']
 
-            # if we are counting a traffic model, import the model from file
+            # if we are counting a traffic model
             if 'traffic_model' in ts_conf:
+                # we need the model, which specifies which counters we need to count
+                # make sure the model file exists
                 ts_conf['traffic_model'] = normalise_path(ts_conf['traffic_model'])
-                assert os.path.exists(os.path.dirname(ts_conf['traffic_model']))
+                assert os.path.exists(ts_conf['traffic_model'])
 
                 # import and validate the model
                 with open(ts_conf['traffic_model'], 'r') as fin:
                     traffic_model_conf = json.load(fin)
-                assert check_traffic_model_config(traffic_model_conf)
+                    assert check_traffic_model_config(traffic_model_conf)
 
-                # store the config so we can transfer it later
+                # store the configs so we can transfer them later
                 ts_conf['traffic_model'] = traffic_model_conf
 
                 # get an object and register the dynamic counters
                 tmodel = TrafficModel(traffic_model_conf)
+
+                # we also need noise parameters for all of the traffic model counters
+                # make sure the noise file exists
+                assert 'traffic_noise' in ts_conf
+                ts_conf['traffic_noise'] = normalise_path(ts_conf['traffic_noise'])
+                assert os.path.exists(ts_conf['traffic_noise'])
+
+                # import and validate the noise
+                with open(ts_conf['traffic_noise'], 'r') as fin:
+                    traffic_noise_conf = yaml.load(fin)
+                assert tmodel.check_noise_config(traffic_noise_conf)
+
+                # store the configs so we can transfer them later
+                ts_conf['traffic_noise'] = traffic_noise_conf
 
                 # supplying a traffic model implies that the tally server
                 # wants to enable all counters associated with that model
                 # register the dynamic counter labels that will be needed for this model
                 tmodel.register_counters()
 
-                # inject the traffic model counter and noise config
-                for label in tmodel.get_all_counter_labels():
-                    # append these to the manually specified counters
-                    ts_conf['counters'][label] = {'bins': [[0.0, float("inf")]]}
-                    # XXX FIXME the following values should be non-zero
-                    # TODO support needs to be added to statistics_noise.py
-                    ts_conf['noise']['counters'][label] = {'sensitivity': 0, 'estimated_value': 0.0}
+                # get the bins and noise that we should use for this model
+                tmodel_bins = tmodel.get_bins_init_config()
+                tmodel_noise = tmodel.get_noise_init_config(traffic_noise_conf)
+
+                # sanity check
+                if set(tmodel_bins.keys()) != set(tmodel_noise.keys()):
+                    logging.error("the set of initial bins and noise labels are not equal")
+                    assert False
+
+                # inject the traffic model counter bins and noise configs, i.e.,
+                # append the traffic model bins and noise to the other configured values
+                for label in tmodel_bins:
+                    ts_conf['counters'][label] = tmodel_bins[label]
+                    ts_conf['noise']['counters'][label] = tmodel_noise[label]
 
             # an optional noise allocation results file
             if 'allocation' in ts_conf:
@@ -1031,7 +1054,7 @@ class CollectionPhase(object):
             # OK if this fails, because the counts will be stored in the results
             # context and can be used to update the model after the round ends
             try:
-                updated_tmodel_conf = tmodel.update_from_counters(tmodel_counts)
+                updated_tmodel_conf = tmodel.update_from_tallies(tmodel_counts)
                 return updated_tmodel_conf
             except:
                 logging.warning("there was a non-fatal exception in the traffic model update function")

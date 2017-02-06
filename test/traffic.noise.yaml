@@ -1,0 +1,28 @@
+counters:
+  TrafficModelTotalEmissions:
+    estimated_value: 0.0
+    sensitivity: 0.0
+  TrafficModelTotalEmissions_<STATE>_<DIRECTION>:
+    estimated_value: 0.0
+    sensitivity: 0.0
+  TrafficModelTotalLogDelay:
+    estimated_value: 0.0
+    sensitivity: 0.0
+  TrafficModelTotalLogDelay_<STATE>_<DIRECTION>:
+    estimated_value: 0.0
+    sensitivity: 0.0
+  TrafficModelTotalSquaredLogDelay:
+    estimated_value: 0.0
+    sensitivity: 0.0
+  TrafficModelTotalSquaredLogDelay_<STATE>_<DIRECTION>:
+    estimated_value: 0.0
+    sensitivity: 0.0
+  TrafficModelTotalTransitions:
+    estimated_value: 0.0
+    sensitivity: 0.0
+  TrafficModelTotalTransitions_<SRCSTATE>_<DSTSTATE>:
+    estimated_value: 0.0
+    sensitivity: 0.0
+  TrafficModelTotalTransitions_START_<STATE>:
+    estimated_value: 0.0
+    sensitivity: 0.0

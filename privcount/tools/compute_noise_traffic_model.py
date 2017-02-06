@@ -23,7 +23,7 @@ sensitivity_kibytes = 10*1024 # 10 MiB, should cover nearly all web pages (see t
 
 sensitivity_packets = sensitivity_kibytes * 1024.0 / 1500.0
 sensitivity_packet_logdelay = sensitivity_circuits * min(slice_length_microseconds, epoch_length_microseconds) * math.log(2)/2.0
-sensitivity_packet_logdelaysquared = 0 # TODO FIXME this value is temporary
+sensitivity_packet_logdelaysquared = 1 # TODO FIXME this value is temporary
 
 ## estimated values ##
 # taken from initial data collection on 4/29/16
@@ -43,7 +43,7 @@ packet_single_parameters = (sensitivity_packets, num_packets_per_day * epoch_len
 packet_histogram_parameters = (2 * sensitivity_packets, num_packets_per_day * epoch_length_days)
 packet_logdelay_single_parameters = (sensitivity_packet_logdelay, num_packet_logdelay_per_day * epoch_length_days)
 packet_logdelay_histogram_parameters = (2 * sensitivity_packet_logdelay, num_packet_logdelay_per_day * epoch_length_days)
-packet_logdelaysquared_single_parameters = (2 * sensitivity_packet_logdelaysquared, num_packet_logdelaysquared_per_day * epoch_length_days)
+packet_logdelaysquared_single_parameters = (sensitivity_packet_logdelaysquared, num_packet_logdelaysquared_per_day * epoch_length_days)
 packet_logdelaysquared_histogram_parameters = (2 * sensitivity_packet_logdelaysquared, num_packet_logdelaysquared_per_day * epoch_length_days)
 
 traffic_model_parameters = {
@@ -55,13 +55,13 @@ traffic_model_parameters = {
 
     # "histogram" type of statistics
     # each '<>' is expanded to include all counters for the states defined in a particular model
-    'TrafficModelTotalEmissions_<><>': packet_histogram_parameters,
-    'TrafficModelTotalLogDelay_<><>': packet_logdelay_histogram_parameters,
-    'TrafficModelTotalSquaredLogDelay_<><>': packet_logdelaysquared_histogram_parameters,
+    'TrafficModelTotalEmissions_<STATE>_<DIRECTION>': packet_histogram_parameters,
+    'TrafficModelTotalLogDelay_<STATE>_<DIRECTION>': packet_logdelay_histogram_parameters,
+    'TrafficModelTotalSquaredLogDelay_<STATE>_<DIRECTION>': packet_logdelaysquared_histogram_parameters,
     # only counted on stream's first packet, so use stream params
-    'TrafficModelTotalTransitions_START_<>': stream_histogram_parameters,
+    'TrafficModelTotalTransitions_START_<STATE>': stream_histogram_parameters,
     # counted on all but the last packet on each stream
-    'TrafficModelTotalTransitions_<>_<>': packet_histogram_parameters,
+    'TrafficModelTotalTransitions_<SRCSTATE>_<DSTSTATE>': packet_histogram_parameters,
 }
 
 if __name__ == '__main__':
@@ -96,5 +96,5 @@ if __name__ == '__main__':
                                    epsilon_tol=epsilon_tol,
                                    sigma_ratio_tol=sigma_ratio_tol,
                                    sanity_check=psn.DEFAULT_DUMMY_COUNTER_NAME)
-    print('\nTraffic model noise config\n')
+    print('Traffic model noise config\n-----')
     print yaml.dump(noise_parameters, default_flow_style=False)

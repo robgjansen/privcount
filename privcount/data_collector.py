@@ -736,99 +736,15 @@ class Aggregator(ReconnectingClientFactory):
         # about that path
         if self.traffic_model is not None and strmid in self.strm_bytes and circid in self.strm_bytes[strmid]:
             byte_events = self.strm_bytes[strmid][circid]
-            observed_packet_delays = self._get_inter_packet_delays(start, byte_events)
-            likliest_states = self.traffic_model.run_viterbi(observed_packet_delays)
+            strm_start_ts = start
+            # let the model handle the model-specific counter increments
+            self.traffic_model.increment_traffic_counters(strm_start_ts, byte_events, self.secure_counters)
 
-            num_packets = len(observed_packet_delays)
-            num_states = len(likliest_states)
-            if num_states > num_packets:
-                logging.warning("viterbi gave us more states than we have packets")
-            elif num_states < num_packets:
-                logging.warning("viterbi gave us fewer states than we have packets")
-
-            '''
-            now increment the counters that we will use to update the model
-
-            example observations = [('+', 20), ('+', 10), ('+',50), ('+',1000)]
-            example viterbi result: Blabbing Blabbing Blabbing Thinking
-            then count the following 4:
-              - increment 1 for state/observation match:
-                Blabbing+, Blabbing+, Blabbing+, Thinking+
-              - increment x where x is log(delay) for each state/observation match:
-                Blabbing+: 2, Blabbing+: 2, Blabbing+: 3, Thinking+: 6
-              - increment x*x where x is log(delay) for each state/observation match:
-                Blabbing+: 4, Blabbing+: 4, Blabbing+: 9, Thinking+: 36
-              - increment 1 for each state-to-state transition:
-                BlabbingBlabbing, BlabbingBlabbing, BlabbingThinking
-            '''
-
-            for i in xrange(num_packets):
-                state = likliest_states[i]
-
-                # delay is in microseconds
-                (dir_code, delay) = observed_packet_delays[i]
-
-                # delay of 0 indicates the packets were observed at the same time
-                # log(x=0) is undefined, and log(x<1) is negative
-                # we don't want to count negatives, so override delay if needed
-                ldelay = 0 if delay < 1 else int(math.log(delay))
-
-                self.secure_counters.increment("TrafficModelTotalEmissions", 1, num_increments=1)
-                label = "TrafficModelTotalEmissions_{}{}".format(state, dir_code)
-                self.secure_counters.increment(label, 1, num_increments=1)
-
-                self.secure_counters.increment("TrafficModelTotalLogDelay", 1, num_increments=ldelay)
-                label = "TrafficModelTotalLogDelay_{}{}".format(state, dir_code)
-                self.secure_counters.increment(label, 1, num_increments=ldelay)
-
-                self.secure_counters.increment("TrafficModelTotalSquaredLogDelay", 1, num_increments=ldelay*ldelay)
-                label = "TrafficModelTotalSquaredLogDelay_{}{}".format(state, dir_code)
-                self.secure_counters.increment(label, 1, num_increments=ldelay*ldelay)
-
-                if i == 0: # track starting transitions
-                    label = "TrafficModelTotalTransitions_START_{}".format(state)
-                    self.secure_counters.increment(label, 1, num_increments=1)
-                if (i+1) < num_states:
-                    next_state = likliest_states[i+1]
-                    self.secure_counters.increment("TrafficModelTotalTransitions", 1, num_increments=1)
-                    label = "TrafficModelTotalTransitions_{}_{}".format(state, next_state)
-                    self.secure_counters.increment(label, 1, num_increments=1)
-
-        # clear all 'packet' data for this stream
+        # clear all 'traffic' data for this stream
         if strmid in self.strm_bytes:
             self.strm_bytes[strmid].pop(circid, None)
             if len(self.strm_bytes[strmid]) == 0:
                 self.strm_bytes.pop(strmid, None)
-
-    def _get_inter_packet_delays(self, strm_start_ts, byte_events):
-        '''
-        Take a list of (bw_bytes, direction, ts) and turn them into packet delay
-        observations of the form [('+', 20), ('+', 10), ('+',50), ('+',1000)]
-          - the returned delays will be in microseconds
-          - the returned list of observations is suitable to pass to
-            TrafficModel.run_viterbi() to find the most likly path (series of states)
-            through our traffic model
-        '''
-        packet_delays = []
-        num_events = len(byte_events)
-        for i in xrange(num_events):
-            (bw_bytes, direction, ts) = byte_events[i]
-
-            # a certain number of bytes were read from the kernel, turn these into packets
-            dir_code = '+' if direction == "outbound" else '-' # '-' for direction == "inbound"
-            # ts is unix timestamp in sec.microsec, like 12345678.123456
-            # so delay will be in microseconds
-            seconds_since_stream_start = ts - strm_start_ts
-            micros = seconds_since_stream_start * 1000000
-            delay = max(long(0), long(micros))
-
-            # create a packet delay for each packet
-            while bw_bytes > 0:
-                packet_delays.append((dir_code, delay))
-                # the first packet gets all of the delay, the others arrive at the same time
-                delay = 0
-                bw_bytes -= 1500 # MTU
-        return packet_delays
 
     def _classify_port(self, port):
         p2p_ports = [1214]

@@ -289,8 +289,10 @@ class PrivCountClient(PrivCountNode):
             if not check_traffic_model_config(start_config['traffic_model']):
                 return None
 
-            # regsiter the dependencies for the dynamic counter labels
-            TrafficModel(start_config['traffic_model']).register_counters()
+            # create the model
+            tmodel = TrafficModel(start_config['traffic_model'])
+            # register the dependencies for the dynamic counter labels
+            tmodel.register_counters()
 
         # if the counters don't pass the validity checks, fail
         if not check_counters_config(start_config['counters'],
