@@ -189,7 +189,7 @@ class TrafficModel(object):
         '''
         Given a list of packet observations of the form ('+' or '-', delay_time), e.g.:
             [('+', 10), ('+', 20), ('+', 50), ('+', 1000)]
-        Run the viterbi dynamic programming algorithm to determine which path through the HMM has the highest probability, i.e.,, closest match to these observations.
+        Run the viterbi dynamic programming algorithm to determine which path through the HMM has the highest probability, i.e., closest match to these observations.
         '''
         SQRT_2_PI = math.sqrt(2*math.pi)
         V = [{}]
