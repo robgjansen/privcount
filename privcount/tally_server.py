@@ -8,6 +8,7 @@ import json
 import logging
 import cPickle as pickle
 import yaml
+import traceback
 
 from time import time
 from copy import deepcopy
@@ -23,6 +24,7 @@ from privcount.log import log_error, format_elapsed_time_since, format_elapsed_t
 from privcount.node import PrivCountServer, continue_collecting, log_tally_server_status
 from privcount.protocol import PrivCountServerProtocol
 from privcount.statistics_noise import get_noise_allocation
+from privcount.traffic_model import TrafficModel, check_traffic_model_config
 
 # for warning about logging function and format # pylint: disable=W1202
 # for calling methods on reactor # pylint: disable=E1101
@@ -176,7 +178,7 @@ class TallyServer(ServerFactory, PrivCountServer):
             # sigmas: contains pre-calculated sigmas
             # (if both are provided, sigmas is ignored)
             # noise file
-            if 'noise' in ts_conf:                
+            if 'noise' in ts_conf:
                 ts_conf['noise'] = normalise_path(ts_conf['noise'])
                 assert os.path.exists(ts_conf['noise'])
                 with open(ts_conf['noise'], 'r') as fin:
@@ -204,6 +206,58 @@ class TallyServer(ServerFactory, PrivCountServer):
             else:
                 ts_conf['noise'] = {}
                 ts_conf['noise']['counters'] = conf['counters']
+
+            # if we are counting a traffic model
+            if 'traffic_model' in ts_conf:
+                # we need the model, which specifies which counters we need to count
+                # make sure the model file exists
+                ts_conf['traffic_model'] = normalise_path(ts_conf['traffic_model'])
+                assert os.path.exists(ts_conf['traffic_model'])
+
+                # import and validate the model
+                with open(ts_conf['traffic_model'], 'r') as fin:
+                    traffic_model_conf = json.load(fin)
+                    assert check_traffic_model_config(traffic_model_conf)
+
+                # store the configs so we can transfer them later
+                ts_conf['traffic_model'] = traffic_model_conf
+
+                # get an object and register the dynamic counters
+                tmodel = TrafficModel(traffic_model_conf)
+
+                # we also need noise parameters for all of the traffic model counters
+                # make sure the noise file exists
+                assert 'traffic_noise' in ts_conf
+                ts_conf['traffic_noise'] = normalise_path(ts_conf['traffic_noise'])
+                assert os.path.exists(ts_conf['traffic_noise'])
+
+                # import and validate the noise
+                with open(ts_conf['traffic_noise'], 'r') as fin:
+                    traffic_noise_conf = yaml.load(fin)
+                assert tmodel.check_noise_config(traffic_noise_conf)
+
+                # store the configs so we can transfer them later
+                ts_conf['traffic_noise'] = traffic_noise_conf
+
+                # supplying a traffic model implies that the tally server
+                # wants to enable all counters associated with that model
+                # register the dynamic counter labels that will be needed for this model
+                tmodel.register_counters()
+
+                # get the bins and noise that we should use for this model
+                tmodel_bins = tmodel.get_bins_init_config()
+                tmodel_noise = tmodel.get_noise_init_config(traffic_noise_conf)
+
+                # sanity check
+                if set(tmodel_bins.keys()) != set(tmodel_noise.keys()):
+                    logging.error("the set of initial bins and noise labels are not equal")
+                    assert False
+
+                # inject the traffic model counter bins and noise configs, i.e.,
+                # append the traffic model bins and noise to the other configured values
+                for label in tmodel_bins:
+                    ts_conf['counters'][label] = tmodel_bins[label]
+                    ts_conf['noise']['counters'][label] = tmodel_noise[label]
 
             # an optional noise allocation results file
             if 'allocation' in ts_conf:
@@ -484,12 +538,17 @@ class TallyServer(ServerFactory, PrivCountServer):
         for uid in sk_uids:
             sk_public_keys[uid] = self.clients[uid]['public_key']
 
+        traffic_model_conf = None
+        if 'traffic_model' in self.config:
+            traffic_model_conf = self.config['traffic_model']
+
         # clients don't provide some context until the end of the phase
         # so we'll wait and pass the client context to collection_phase just
         # before stopping it
 
         self.collection_phase = CollectionPhase(self.config['collect_period'],
                                                 self.config['counters'],
+                                                traffic_model_conf,
                                                 self.config['noise'],
                                                 self.config['noise_weight'],
                                                 self.config['dc_threshold'],
@@ -569,7 +628,7 @@ class TallyServer(ServerFactory, PrivCountServer):
 
 class CollectionPhase(object):
 
-    def __init__(self, period, counters_config, noise_config,
+    def __init__(self, period, counters_config, traffic_model_config, noise_config,
                  noise_weight_config, dc_threshold_config, sk_uids,
                  sk_public_keys, dc_uids, modulus, clock_padding,
                  tally_server_config):
@@ -577,6 +636,7 @@ class CollectionPhase(object):
         self.period = period
         # the counter bins
         self.counters_config = counters_config
+        self.traffic_model_config = traffic_model_config
         self.noise_config = noise_config
         self.noise_weight_config = noise_weight_config
         self.dc_threshold_config = dc_threshold_config
@@ -762,6 +822,8 @@ class CollectionPhase(object):
             for sk_uid in self.sk_public_keys:
                 config['sharekeepers'][sk_uid] = b64encode(self.sk_public_keys[sk_uid])
             config['counters'] = self.counters_config
+            if self.traffic_model_config is not None:
+                config['traffic_model'] = self.traffic_model_config
             config['noise'] = self.noise_config
             config['noise_weight'] = self.noise_weight_config
             config['dc_threshold'] = self.dc_threshold_config
@@ -776,6 +838,8 @@ class CollectionPhase(object):
         elif self.state == 'starting_sks' and client_uid in self.sk_uids:
             config['shares'] = self.encrypted_shares[client_uid]
             config['counters'] = self.counters_config
+            if self.traffic_model_config is not None:
+                config['traffic_model'] = self.traffic_model_config
             config['noise'] = self.noise_config
             config['noise_weight'] = self.noise_weight_config
             config['dc_threshold'] = self.dc_threshold_config
@@ -943,6 +1007,74 @@ class CollectionPhase(object):
 
         return result_context
 
+    def get_updated_traffic_model(self, tallied_counts):
+        '''
+        Given the tallied counters in tallied_counts, compute an updated
+        TrafficModel config by loading the initial traffic model and updating
+        the states of the model based on the traffic model labels that were
+        just counted during this round.
+
+        Return None if a traffic model config was not provided as input this round,
+        or if there was a problem with the tallied_counts that would prevent us from
+        updating the model, or if there was an exception in the traffic model
+        update function.
+
+        Return the updated traffic model config on success. The new config can
+        be used as input into the next collection round and can be used to
+        instantiate another TrafficModel instance.
+        '''
+        if self.traffic_model_config is None: return None
+
+        # create a TrafficModel object from the original input model config
+        tmodel = TrafficModel(self.traffic_model_config)
+        all_tmodel_labels = tmodel.get_all_counter_labels()
+
+        # the traffic model class expects counts only, i.e, dict[label] = count
+        tmodel_counts = {}
+        for label in all_tmodel_labels:
+            if label not in tallied_counts:
+                logging.warning("tallied counters are missing traffic model label {}"
+                                .format(label))
+            elif 'bins' not in tallied_counts[label]:
+                logging.warning("tallied counters are missing bins for traffic model label {}"
+                                .format(label))
+            elif len(tallied_counts[label]['bins']) < 1:
+                logging.warning("tallied counters have too few bins for traffic model label {}"
+                                .format(label))
+            elif len(tallied_counts[label]['bins'][0]) < 3:
+                logging.warning("tallied counters are missing bin count for traffic model label {}"
+                                .format(label))
+            else:
+                # get the actual count (traffic model only uses 1 bin for each label)
+                tmodel_counts[label] = tallied_counts[label]['bins'][0][2]
+
+        # now make sure we got counts for all of the labels
+        if len(tmodel_counts) == len(all_tmodel_labels):
+            # update the original tmodel based on our new counts, and output. it's
+            # OK if this fails, because the counts will be stored in the results
+            # context and can be used to update the model after the round ends
+            try:
+                updated_tmodel_conf = tmodel.update_from_tallies(tmodel_counts)
+                return updated_tmodel_conf
+            except:
+                logging.warning("there was a non-fatal exception in the traffic model update function")
+                traceback.print_exc()
+                traceback.print_stack()
+                return None
+        else:
+            # some problem with counter labels
+            logging.warning("the traffic model and tallied counter labels are inconsistent")
+            return None
+
+    def write_json_file(self, json_object, path_prefix, filename_prefix, begin, end):
+        filepath = os.path.join(path_prefix,
+                                "{}.{}-{}.json"
+                                .format(filename_prefix, begin, end))
+        with open(filepath, 'w') as fout:
+            json.dump(json_object, fout, sort_keys=True, indent=4)
+
+        return filepath
+
     def write_results(self, path_prefix, end_time):
         '''
         Write collections results to a file in path_prefix, including end_time
@@ -967,6 +1099,8 @@ class CollectionPhase(object):
 
         begin = int(round(self.starting_ts))
         end = int(round(self.stopping_ts))
+
+        tallied_counts = {}
         # keep going, we want the context for debugging
         if not tally_was_successful:
             logging.warning("problem tallying counters, did all counters and bins match!?")
@@ -975,11 +1109,8 @@ class CollectionPhase(object):
 
             # For backwards compatibility, write out a "tallies" file
             # This file only has the counts
-            filepath = os.path.join(path_prefix,
-                                    "privcount.tallies.{}-{}.json"
-                                    .format(begin, end))
-            with open(filepath, 'w') as fout:
-                json.dump(tallied_counts, fout, sort_keys=True, indent=4)
+            self.write_json_file(tallied_counts, path_prefix,
+                                 "privcount.tallies", begin, end)
 
         #logging.info("tally was successful, counts for phase from %d to %d were written to file '%s'", begin, end, filepath)
 
@@ -991,13 +1122,19 @@ class CollectionPhase(object):
             # add the existing list of counts as its own item
             result_info['Tally'] = tallied_counts
 
+            if self.traffic_model_config is not None:
+                # compute the updated traffic model and store in results context
+                result_info['UpdatedTrafficModel'] = self.get_updated_traffic_model(tallied_counts)
+
+                # also write out a copy of the new model
+                self.write_json_file(result_info['UpdatedTrafficModel'],
+                                     path_prefix, "privcount.traffic.model", begin, end)
+
         # add the context of the outcome as another item
         result_info['Context'] = self.get_result_context(end_time)
 
-        filepath = os.path.join(path_prefix, "privcount.outcome.{}-{}.json"
-                                .format(begin, end))
-        with open(filepath, 'w') as fout:
-            json.dump(result_info, fout, sort_keys=True, indent=4)
+        filepath = self.write_json_file(result_info, path_prefix,
+                             "privcount.outcome", begin, end)
 
         logging.info("tally {}, outcome of phase of {} was written to file '{}'"
                      .format(

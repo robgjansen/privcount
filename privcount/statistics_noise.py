@@ -461,6 +461,8 @@ def print_privacy_allocation(stats_parameters, sigmas, epsilons, excess_noise_ra
         print('Ratio of sigma value to expected value: {}'.format(ratio))
         break
 
+    print ""
+
     # print allocation of privacy budget
     sigma_params_sorted = sigmas.keys()
     # add dummy counter for full counters.noise.yaml
@@ -475,3 +477,5 @@ def print_privacy_allocation(stats_parameters, sigmas, epsilons, excess_noise_ra
         sigma = sigmas[param]
         print('    {}:'.format(param))
         print('        sigma: {:4f}'.format(sigma))
+
+    print ""
