@@ -32,6 +32,7 @@ def listen(factory, config, ip_local_default=True, ip_version_default=4):
     '''
     Set up factory to listen for connections, based on config, which is a
     dictionary containing listening configuration information.
+    control_password: the password required for tor control authentication
     IP addresses:
       port: IP port
       ip: IPv4 or IPv6 address (optional)
@@ -128,6 +129,7 @@ def connect(factory, config, ip_local_default=True, ip_version_default=4):
     Set up factory to connect to service, based on config, which is a
     dictionary containing connection configuration information.
     Known config keys are:
+    control_password: the password required for tor control authentication
     IP addresses:
       port: IP port
       ip: IPv4 or IPv6 address (optional)
@@ -266,15 +268,47 @@ def validate_connection_config(config, must_have_ip=False):
                 logging.warning("Invalid unix path: missing value")
                 return False
             # let the libraries catch other errors later
+        if 'control_password' in item:
+            # An empty control password is insecure, so we don't allow it
+            if _config_missing(item, 'control_password'):
+                logging.warning("Invalid control password: missing value")
+                return False
+            # let the libraries catch other errors later
     return True
 
-def choose_a_connection(arg):
+def choose_a_connection(config):
     '''
-    If arg is a sequence, return an arbitrary item from that sequence.
-    Otherwise, return arg.
+    If config is a sequence, return an arbitrary item from that sequence.
+    Otherwise, return config.
     '''
-    arg = _listify(arg)
-    return arg[0]
+    config = _listify(config)
+    return config[0]
+
+def get_a_control_password(config):
+        '''
+        Return an arbitrary control password from config, or None if no item
+        in config has a control password.
+        '''
+        # If there are multiple items, return one of their passwords
+        # Using different passwords on different items is not supported
+        # (we don't match up the connection info)
+        item = choose_a_connection_with(config, 'control_password')
+        if item is None:
+            return None
+        return item.get('control_password', None)
+
+def choose_a_connection_with(config, attribute):
+    '''
+    If config is a sequence, return an arbitrary item from that sequence that
+    has attribute.
+    Otherwise, return config if it has attribute.
+    Otherwise, return None.
+    '''
+    config = _listify(config)
+    for item in config:
+        if attribute in item:
+            return item
+    return None
 
 def _config_missing(config, key, check_len=True):
     '''

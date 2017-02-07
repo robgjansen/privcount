@@ -92,8 +92,17 @@ $MOVE_LOG_COMMAND || true
 # It's better to get full data
 GZIP_CMD="gzip -c -d events2.txt.gz"
 INJECTOR_BASE_CMD="privcount inject --log -"
-INJECTOR_PORT_CMD="$INJECTOR_BASE_CMD --port 20003"
-INJECTOR_UNIX_CMD="$INJECTOR_BASE_CMD --unix /tmp/privcount-inject"
+
+# Prepare for password authentication: the data collector and injector both
+# read this file
+echo "Generating random password file..."
+cat /dev/random | hexdump -e '"%x"' -n 32 -v > keys/control_password.txt
+# The command for password authentication
+INJECTOR_PORT_CMD="$INJECTOR_BASE_CMD --port 20003 --control-password keys/control_password.txt"
+
+# The injector automatically writes its own cookie file, just like tor
+# The command for safecookie authentication
+INJECTOR_UNIX_CMD="$INJECTOR_BASE_CMD --unix /tmp/privcount-inject --control-cookie-file /tmp/privcount-control-auth-cookie"
 
 # Generate a log file name
 # Usage:
@@ -244,6 +253,7 @@ fi
 echo "Extracting warnings from privcount output..."
 grep -v -e NOTICE -e INFO -e DEBUG \
   -e "seconds of user activity" -e "delay_period not specified" \
+  -e "control port has no authentication" \
   privcount.*.latest.log \
   || true
 

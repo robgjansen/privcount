@@ -20,21 +20,24 @@ def get_remaining_rounds(num_phases, continue_config):
         rounds, return the number of rounds. Otherwise, if it will continue
         forever, return None.
         '''
+        # run at least once
+        min_remaining = 0
         if num_phases == 0:
-            return 1
+            min_remaining = 1
         if isinstance(continue_config, bool):
             if continue_config:
                 return None
             else:
-                return 0
+                return max(0, min_remaining)
         else:
-            return continue_config - num_phases
+            return max(continue_config - num_phases, min_remaining)
 
 def continue_collecting(num_phases, continue_config):
         '''
         If the TS is configured to continue collecting more rounds,
         return True. Otherwise, return False.
         '''
+        # run at least once
         if num_phases == 0:
             return True
         if isinstance(continue_config, bool):

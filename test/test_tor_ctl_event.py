@@ -10,7 +10,7 @@ from os import path
 from twisted.internet import reactor
 from twisted.internet.protocol import ReconnectingClientFactory
 
-from privcount.connection import connect, transport_info
+from privcount.connection import connect, transport_info, get_a_control_password
 from privcount.protocol import TorControlClientProtocol, get_valid_events
 
 # set the log level
@@ -34,7 +34,8 @@ from privcount.protocol import TorControlClientProtocol, get_valid_events
 #
 ## Testing
 # source venv/bin/activate
-# python test/test_tor_ctl_event.py
+# python test/test_tor_ctl_event.py [ unix_socket_path | control_port |
+#                                     control_password ]
 ## wait a few minutes for the first events to arrive, or just terminate tor
 ## using a SIGINT after it has made some connections
 
@@ -45,6 +46,8 @@ TOR_CONTROL_PATH = '/var/run/tor/control'
 TOR_CONTROL_PORT = 9051
 # Try localhost on this IP version
 TOR_CONTROL_IP_VERSION = 4
+
+config_list = []
 
 class TorCtlClient(ReconnectingClientFactory):
     '''
@@ -67,6 +70,14 @@ class TorCtlClient(ReconnectingClientFactory):
         # ask for all the events
         self.client.startCollection(None, event_list=get_valid_events())
         return self.client
+
+    def get_control_password(self):
+        '''
+        Return the configured control password, or None if no connections have
+        a control password.
+        '''
+        # Configuring multiple passwords is not supported
+        return get_a_control_password(config_list)
 
     def set_nickname(self, nickname):
         '''
@@ -99,7 +110,6 @@ class TorCtlClient(ReconnectingClientFactory):
                                                       " ".join(event))
         return True
 
-config_list = []
 # Process command-line arguments
 if len(sys.argv) > 1:
     # Just try every possible method, and let the ones that don't work fail
@@ -120,7 +130,15 @@ if len(sys.argv) > 1:
             port_config = { 'port' : control_port }
             config_list.append(port_config)
         except ValueError:
-            pass
+            # Ok, so maybe it's a password?
+            # TODO: use actual --argument-name specifiers
+            control_password = arg
+            logging.warning("Trying control password: {}"
+                            .format(control_password))
+            password_config = { 'control_password' : control_password }
+            # the controller picks an arbitrary password, so don't supply more
+            # than one
+            config_list.append(password_config)
 
 # Set defaults if there is nothing in the config list
 if len(config_list) == 0:

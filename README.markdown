@@ -78,18 +78,34 @@ To run PrivCount, simply activate the virtual environment that you created earli
 
 # deployment
 
-## keys
+## PrivCount keys
 
 On first run, PrivCount creates the keys that it needs to run:
 
 The TallyServer creates a RSA key pair for SSL encryption:
-    * the clients do not check the fingerprint of the certificate
+    * no configuration is required: clients do not check this key
 
 The TallyServer creates a PrivCount secret handshake key:
-    * each ShareKeeper and DataCollector needs to know this key to successfully handshake with the TallyServer.
+    * each ShareKeeper and DataCollector needs to know this key to
+      successfully handshake with the TallyServer
 
 Each ShareKeeper creates a RSA key pair for public key encryption:
-     * each DataCollector needs to know the SHA256 hash of the public key of each ShareKeeper
+     * each DataCollector needs to know the SHA256 hash of the public key of
+       each ShareKeeper
+
+See doc/PrivCountAuthentication.markdown for more details.
+
+## Tor Control Authentication
+
+
+PrivCount securely authenticates to tor's control port. This prevents the
+control port being used to run commands as the tor user.
+
+Password authentication requires a shared secret configured using the
+event_source's control_password option. Cookie authentication requires the
+PrivCount user to have read access to tor's cookie file.
+
+See doc/TorControlAuthentication.markdown for more details.
 
 # testing
 

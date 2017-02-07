@@ -94,7 +94,7 @@ def verify_hmac(expected_result, secret_key, unique_prefix, data):
     try:
         h.verify(bytes(expected_result))
         return True
-    except cryptography.exceptions.InvalidSignature:
+    except InvalidSignature:
         return False
 
 def b64_raw_length(byte_count):

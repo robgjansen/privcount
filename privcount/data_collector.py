@@ -13,7 +13,7 @@ from twisted.internet import task, reactor, ssl
 from twisted.internet.protocol import ReconnectingClientFactory
 
 from privcount.config import normalise_path, choose_secret_handshake_path
-from privcount.connection import connect, disconnect, validate_connection_config, choose_a_connection
+from privcount.connection import connect, disconnect, validate_connection_config, choose_a_connection, get_a_control_password
 from privcount.counter import SecureCounters, counter_modulus, add_counter_limits_to_config, combine_counters
 from privcount.crypto import get_public_digest_string, load_public_key_string, encrypt
 from privcount.log import log_error, format_delay_time_wait, format_last_event_time_since
@@ -431,6 +431,14 @@ class Aggregator(ReconnectingClientFactory):
             self._stop_protocol()
             self._stop_secure_counters(counts_are_valid=False)
 
+    def get_control_password(self):
+        '''
+        Return the configured control password for this data collector, or
+        None if no connections have a control password.
+        '''
+        # Multiple different control passwords are not supported
+        return get_a_control_password(self.tor_control_port)
+
     def set_nickname(self, nickname):
         nickname = nickname.strip()
 
@@ -530,7 +538,15 @@ class Aggregator(ReconnectingClientFactory):
         # Are we replacing an existing version?
         if self.version is not None:
             if self.version != version:
-                logging.warning("Replacing version %s with %s", self.version, version)
+                if self.version.lower() in version.lower():
+                    # we just added a git tag to the version
+                    # this happens because GETINFO version has the tag, but
+                    # PROTOCOLINFO does not
+                    logging_level = logging.debug
+                else:
+                    # did someone just restart tor with a new version?
+                    logging_level = logging.warning
+                logging_level("Replacing version %s with %s", self.version, version)
             else:
                 logging.debug("Duplicate version received %s", version)
 
