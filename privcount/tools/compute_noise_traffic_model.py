@@ -23,7 +23,7 @@ sensitivity_kibytes = 10*1024 # 10 MiB, should cover nearly all web pages (see t
 
 sensitivity_packets = sensitivity_kibytes * 1024.0 / 1500.0
 sensitivity_packet_logdelay = sensitivity_circuits * min(slice_length_microseconds, epoch_length_microseconds) * math.log(2)/2.0
-sensitivity_packet_logdelaysquared = 1 # TODO FIXME this value is temporary
+sensitivity_packet_logdelaysquared = 1 # TODO this value is temporary
 
 ## estimated values ##
 # taken from initial data collection on 4/29/16
