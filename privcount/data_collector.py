@@ -671,7 +671,7 @@ class Aggregator(ReconnectingClientFactory):
                 self._handle_connection_event(items[0:6])
 
         elif event_code == 'PRIVCOUNT_STREAM_BYTES_TRANSFERRED':
-            # 'PRIVCOUNT_STREAM_BYTES_TRANSFERRED', ChanID, CircID, StreamID, BW, Direction, Time
+            # 'PRIVCOUNT_STREAM_BYTES_TRANSFERRED', ChanID, CircID, StreamID, isOutbound, BW, Time
             if len(items) == 6:
                 self._handle_bytes_event(items[0:6])
 
@@ -681,13 +681,11 @@ class Aggregator(ReconnectingClientFactory):
         if self.traffic_model == None:
             return
 
-        chanid, circid, strmid = [int(v) for v in items[0:3]]
-        direction = items[3]
-        bw_bytes = int(items[4])
+        chanid, circid, strmid, is_outbound, bw_bytes = [int(v) for v in items[0:5]]
         ts = float(items[5])
 
         self.strm_bytes.setdefault(strmid, {}).setdefault(circid, [])
-        self.strm_bytes[strmid][circid].append([bw_bytes, direction, ts])
+        self.strm_bytes[strmid][circid].append([bw_bytes, is_outbound, ts])
 
     def _handle_stream_event(self, items):
         chanid, circid, strmid, port, readbw, writebw = [long(v) for v in items[0:6]]

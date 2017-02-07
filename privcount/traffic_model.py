@@ -251,7 +251,7 @@ class TrafficModel(object):
 
     def _get_inter_packet_delays(self, strm_start_ts, byte_events):
         '''
-        Take a list of (bw_bytes, direction, ts) and turn them into packet delay
+        Take a list of (bw_bytes, is_outbound, ts) and turn them into packet delay
         observations of the form [('+', 20), ('+', 10), ('+',50), ('+',1000)]
           - the returned delays will be in microseconds
           - the returned list of observations is suitable to pass to
@@ -261,10 +261,10 @@ class TrafficModel(object):
         packet_delays = []
         num_events = len(byte_events)
         for i in xrange(num_events):
-            (bw_bytes, direction, ts) = byte_events[i]
+            (bw_bytes, is_outbound, ts) = byte_events[i]
 
             # a certain number of bytes were read from the kernel, turn these into packets
-            dir_code = '+' if direction == "outbound" else '-' # '-' for direction == "inbound"
+            dir_code = '+' if is_outbound else '-' # '-' for "inbound" direction
             # ts is unix timestamp in sec.microsec, like 12345678.123456
             # so delay will be in microseconds
             seconds_since_stream_start = ts - strm_start_ts
@@ -284,7 +284,7 @@ class TrafficModel(object):
         Increment the appropriate secure counter labels for this model given the observed
         list of events specifying when bytes were transferred in Tor.
           strm_start_ts: the start time of the stream carrying these bytes
-          bytes_events: a list of [bw_bytes, direction, ts] lists, specifying the number of
+          bytes_events: a list of [bw_bytes, is_outbound, ts] lists, specifying the number of
             bytes tranferred, the direction, and the time of transfer
           secure_counters: the SecureCounters object whose counters should get incremented
             as a result of the observed bytes events
