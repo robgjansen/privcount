@@ -56,6 +56,10 @@ echo "Testing counters:"
 python test_counter.py
 echo ""
 
+echo "Testing traffic model:"
+python test_traffic_model.py
+echo ""
+
 echo "Testing noise:"
 # The noise script contains its own main function, which we use as a test
 python ../privcount/statistics_noise.py
@@ -86,7 +90,8 @@ $MOVE_LOG_COMMAND || true
 # Injector commands for re-use
 # We can either test --simulate, and get partial data, or get full data
 # It's better to get full data
-INJECTOR_BASE_CMD="privcount inject --log events.txt"
+GZIP_CMD="gzip -c -d events2.txt.gz"
+INJECTOR_BASE_CMD="privcount inject --log -"
 
 # Prepare for password authentication: the data collector and injector both
 # read this file
@@ -138,7 +143,7 @@ privcount ts config.yaml 2>&1 | `save_to_log ts $LOG_TIMESTAMP` &
 privcount sk config.yaml 2>&1 | `save_to_log sk $LOG_TIMESTAMP` &
 privcount dc config.yaml 2>&1 | `save_to_log dc $LOG_TIMESTAMP` &
 ROUNDS=1
-$INJECTOR_PORT_CMD 2>&1 | `save_to_log inject.$ROUNDS $LOG_TIMESTAMP` &
+$GZIP_CMD | $INJECTOR_PORT_CMD 2>&1 | `save_to_log inject.$ROUNDS $LOG_TIMESTAMP` &
 
 # Then wait for each job, terminating if any job produces an error
 # Ideally, we'd want to use wait, or wait $job, but that only checks one job
@@ -163,7 +168,7 @@ while echo "$JOB_STATUS" | grep -q "Running"; do
       $MOVE_PDF_COMMAND 2> /dev/null || true
       ROUNDS=$[$ROUNDS+1]
       echo "Restarting injector (unix path) for round $ROUNDS..."
-      $INJECTOR_UNIX_CMD 2>&1 | `save_to_log inject.$ROUNDS $LOG_TIMESTAMP` &
+      $GZIP_CMD | $INJECTOR_UNIX_CMD 2>&1 | `save_to_log inject.$ROUNDS $LOG_TIMESTAMP` &
     else
       break
     fi
@@ -202,6 +207,9 @@ function link_latest() {
 
 # If an outcome file was produced, keep a link to the latest file
 link_latest outcome json
+
+# If a traffic model file was produced, keep a link to the latest file
+link_latest traffic.model json
 
 # If a tallies file was produced, keep a link to the latest file, and plot it
 link_latest tallies json

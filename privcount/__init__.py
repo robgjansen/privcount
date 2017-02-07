@@ -11,4 +11,5 @@ __all__ = [
    'share_keeper',
    'statistics_noise',
    'tally_server',
+   'traffic_model',
 ]

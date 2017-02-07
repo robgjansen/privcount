@@ -19,6 +19,7 @@ from privcount.crypto import get_public_digest_string, load_public_key_string, e
 from privcount.log import log_error, format_delay_time_wait, format_last_event_time_since
 from privcount.node import PrivCountClient
 from privcount.protocol import PrivCountClientProtocol, TorControlClientProtocol
+from privcount.traffic_model import TrafficModel, check_traffic_model_config
 
 # using reactor: pylint: disable=E1101
 # method docstring missing: pylint: disable=C0111
@@ -153,8 +154,14 @@ class DataCollector(ReconnectingClientFactory, PrivCountClient):
             logging.info('refusing to start collecting without required share keepers')
             return None
 
+        # if we got a traffic model from the tally server and it passes validation,
+        # then load the traffic model object that we will use during aggregation
+        traffic_model_config = None
+        if 'traffic_model' in config:
+            traffic_model_config = config['traffic_model']
+
         # The aggregator doesn't care about the DC threshold
-        self.aggregator = Aggregator(dc_counters, config['sharekeepers'], config['noise_weight'], counter_modulus(), self.config['event_source'])
+        self.aggregator = Aggregator(dc_counters, traffic_model_config, config['sharekeepers'], config['noise_weight'], counter_modulus(), self.config['event_source'])
 
         defer_time = config['defer_time'] if 'defer_time' in config else 0.0
         logging.info("got start command from tally server, starting aggregator in {}".format(format_delay_time_wait(defer_time, 'at')))
@@ -274,13 +281,19 @@ class Aggregator(ReconnectingClientFactory):
     send results for tallying
     '''
 
-    def __init__(self, counters, sk_uids, noise_weight, modulus,
-                 tor_control_port):
+    def __init__(self, counters, traffic_model_config, sk_uids,
+                 noise_weight, modulus, tor_control_port):
         self.secure_counters = SecureCounters(counters, modulus)
         self.collection_counters = counters
         # we can't generate the noise yet, because we don't know the
         # DC fingerprint
         self.secure_counters.generate_blinding_shares(sk_uids)
+
+        # the traffic model is optional
+        self.traffic_model = None
+        if traffic_model_config is not None:
+            self.traffic_model = TrafficModel(traffic_model_config)
+
         self.noise_weight_config = noise_weight
         self.noise_weight_value = None
 
@@ -293,6 +306,7 @@ class Aggregator(ReconnectingClientFactory):
         self.last_event_time = 0.0
         self.num_rotations = 0L
         self.circ_info = {}
+        self.strm_bytes = {}
         self.cli_ips_rotated = time()
         self.cli_ips_current = {}
         self.cli_ips_previous = {}
@@ -656,7 +670,24 @@ class Aggregator(ReconnectingClientFactory):
             if len(items) == 6:
                 self._handle_connection_event(items[0:6])
 
+        elif event_code == 'PRIVCOUNT_STREAM_BYTES_TRANSFERRED':
+            # 'PRIVCOUNT_STREAM_BYTES_TRANSFERRED', ChanID, CircID, StreamID, BW, Direction, Time
+            if len(items) == 6:
+                self._handle_bytes_event(items[0:6])
+
         return True
+
+    def _handle_bytes_event(self, items):
+        if self.traffic_model == None:
+            return
+
+        chanid, circid, strmid = [int(v) for v in items[0:3]]
+        direction = items[3]
+        bw_bytes = int(items[4])
+        ts = float(items[5])
+
+        self.strm_bytes.setdefault(strmid, {}).setdefault(circid, [])
+        self.strm_bytes[strmid][circid].append([bw_bytes, direction, ts])
 
     def _handle_stream_event(self, items):
         chanid, circid, strmid, port, readbw, writebw = [long(v) for v in items[0:6]]
@@ -715,6 +746,21 @@ class Aggregator(ReconnectingClientFactory):
             self.secure_counters.increment("StreamBytesInOther", readbw)
             self.secure_counters.increment("StreamBytesRatioOther", ratio)
             self.secure_counters.increment("StreamLifeTimeOther", lifetime)
+
+        # if we have a traffic model object, then we should use our observations to find the
+        # most likely path through the HMM, and then count some aggregate statistics
+        # about that path
+        if self.traffic_model is not None and strmid in self.strm_bytes and circid in self.strm_bytes[strmid]:
+            byte_events = self.strm_bytes[strmid][circid]
+            strm_start_ts = start
+            # let the model handle the model-specific counter increments
+            self.traffic_model.increment_traffic_counters(strm_start_ts, byte_events, self.secure_counters)
+
+        # clear all 'traffic' data for this stream
+        if strmid in self.strm_bytes:
+            self.strm_bytes[strmid].pop(circid, None)
+            if len(self.strm_bytes[strmid]) == 0:
+                self.strm_bytes.pop(strmid, None)
 
     def _classify_port(self, port):
         p2p_ports = [1214]

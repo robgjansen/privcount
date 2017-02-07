@@ -40,6 +40,7 @@ Run the unit tests: (optional)
     python test_encryption.py
     python test_random.py
     python test_counter.py
+    python test_traffic_model.py
 
 If you have a local privcount-patched Tor instance, you can test that it is returning PRIVCOUNT events:
 
@@ -49,7 +50,7 @@ If you have a local privcount-patched Tor instance, you can test that it is retu
 
 Start the event server that will supply events to the data collector:
 
-    privcount inject --port 20003 --log events.txt
+    gzip -c -d events2.txt.gz | privcount inject --port 20003 --log -
 
 Start the PrivCount components:
 

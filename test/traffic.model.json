@@ -1,0 +1,56 @@
+{
+  "emission_probability": {
+    "Blabbing": {
+      "+": [
+        0.8,
+        2.65,
+        0.83
+      ],
+      "-": [
+        0.2,
+        6.56,
+        0.83
+      ]
+    },
+    "Thinking": {
+      "+": [
+        0.95,
+        8.86,
+        0.83
+      ],
+      "-": [
+        0.05,
+        8.86,
+        0.83
+      ]
+    },
+    "End": {
+      "F": [
+        1.0,
+        11.17,
+        1.66
+      ]
+    }
+  },
+  "start_probability": {
+    "Blabbing": 0.6,
+    "Thinking": 0.4
+  },
+  "states": [
+    "Blabbing",
+    "Thinking",
+    "End"
+  ],
+  "transition_probability": {
+    "Blabbing": {
+      "Blabbing": 0.7,
+      "Thinking": 0.3
+    },
+    "Thinking": {
+      "Blabbing": 0.35,
+      "Thinking": 0.55,
+      "End": 0.10
+    },
+    "End": {}
+  }
+}
