@@ -255,9 +255,8 @@ class TallyServer(ServerFactory, PrivCountServer):
 
                 # inject the traffic model counter bins and noise configs, i.e.,
                 # append the traffic model bins and noise to the other configured values
-                for label in tmodel_bins:
-                    ts_conf['counters'][label] = tmodel_bins[label]
-                    ts_conf['noise']['counters'][label] = tmodel_noise[label]
+                ts_conf['counters'].update(tmodel_bins)
+                ts_conf['noise']['counters'].update(tmodel_noise)
 
             # an optional noise allocation results file
             if 'allocation' in ts_conf:
