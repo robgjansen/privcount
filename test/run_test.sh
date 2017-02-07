@@ -247,6 +247,19 @@ else
   echo "$0 must be run twice to produce the first comparison."
 fi
 
+# Show the differences between the latest and old latest traffic model files
+if [ -e privcount.traffic.model.latest.json -a \
+     -e old/privcount.traffic.model.latest.json ]; then
+  echo "Comparing latest traffic model file with previous traffic model file..."
+  diff --minimal \
+    old/privcount.traffic.model.latest.json privcount.traffic.model.latest.json || true
+else
+  # Since we need old/latest and latest, it takes two runs to generate the
+  # first traffic model file comparison
+  echo "Warning: traffic model files could not be compared."
+  echo "$0 must be run twice to produce the first comparison."
+fi
+
 # Grep the warnings out of the log files
 # We don't diff the previous log files with the latest log files, because many
 # of the timestamps and other irrelevant details are different
