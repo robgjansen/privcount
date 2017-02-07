@@ -90,8 +90,7 @@ $MOVE_LOG_COMMAND || true
 # Injector commands for re-use
 # We can either test --simulate, and get partial data, or get full data
 # It's better to get full data
-GZIP_CMD="gzip -c -d events2.txt.gz"
-INJECTOR_BASE_CMD="privcount inject --log -"
+INJECTOR_BASE_CMD="privcount inject --log events.txt"
 
 # Prepare for password authentication: the data collector and injector both
 # read this file
@@ -143,7 +142,7 @@ privcount ts config.yaml 2>&1 | `save_to_log ts $LOG_TIMESTAMP` &
 privcount sk config.yaml 2>&1 | `save_to_log sk $LOG_TIMESTAMP` &
 privcount dc config.yaml 2>&1 | `save_to_log dc $LOG_TIMESTAMP` &
 ROUNDS=1
-$GZIP_CMD | $INJECTOR_PORT_CMD 2>&1 | `save_to_log inject.$ROUNDS $LOG_TIMESTAMP` &
+$INJECTOR_PORT_CMD 2>&1 | `save_to_log inject.$ROUNDS $LOG_TIMESTAMP` &
 
 # Then wait for each job, terminating if any job produces an error
 # Ideally, we'd want to use wait, or wait $job, but that only checks one job
@@ -168,7 +167,7 @@ while echo "$JOB_STATUS" | grep -q "Running"; do
       $MOVE_PDF_COMMAND 2> /dev/null || true
       ROUNDS=$[$ROUNDS+1]
       echo "Restarting injector (unix path) for round $ROUNDS..."
-      $GZIP_CMD | $INJECTOR_UNIX_CMD 2>&1 | `save_to_log inject.$ROUNDS $LOG_TIMESTAMP` &
+      $INJECTOR_UNIX_CMD 2>&1 | `save_to_log inject.$ROUNDS $LOG_TIMESTAMP` &
     else
       break
     fi
