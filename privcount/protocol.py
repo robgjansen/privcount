@@ -1719,15 +1719,23 @@ class TorControlClientProtocol(LineOnlyReceiver, TorControlProtocol):
                                                   'get_circuit_sample_rate',
                                                   'circuit sample rate',
                                                   default=1.0)
+                max_cell_events_per_circuit = self.getConfiguredValue(
+                                                  'get_max_cell_events_per_circuit',
+                                                  'max cell events per circuit',
+                                                  default=-1)
                 # Protect the EnablePrivCount setting from logrotate and
                 # similar
                 self.sendLine("SETCONF __ReloadTorrcOnSIGHUP=0")
                 # Avoid format string vulnerabilities
                 circuit_sample_rate = float(circuit_sample_rate)
+                max_cell_events_per_circuit = int(max_cell_events_per_circuit)
                 # be tolerant of Tor versions without this feature
                 if circuit_sample_rate != 1.0:
                     self.sendLine("SETCONF PrivCountCircuitSampleRate={}"
                                   .format(circuit_sample_rate))
+                if max_cell_events_per_circuit >= 0:
+                    self.sendLine("SETCONF PrivCountMaxCellEventsPerCircuit={}"
+                                  .format(max_cell_events_per_circuit))
                 self.sendLine("SETCONF EnablePrivCount=1")
             # Always check that EnablePrivCount is set, even if we just set it
             self.sendLine("GETCONF EnablePrivCount")
@@ -1762,10 +1770,16 @@ class TorControlClientProtocol(LineOnlyReceiver, TorControlProtocol):
                                                   'get_circuit_sample_rate',
                                                   'circuit sample rate',
                                                   default=1.0)
+                max_cell_events_per_circuit = self.getConfiguredValue(
+                                                  'get_max_cell_events_per_circuit',
+                                                  'max cell events per circuit',
+                                                  default=-1)
                 self.sendLine("SETCONF EnablePrivCount=0")
                 # be tolerant of Tor versions without this feature
                 if circuit_sample_rate != 1.0:
                     self.sendLine("SETCONF PrivCountCircuitSampleRate=1.0")
+                if max_cell_events_per_circuit >= 0:
+                    self.sendLine("SETCONF PrivCountMaxCellEventsPerCircuit=-1")
                 self.sendLine("SETCONF __ReloadTorrcOnSIGHUP=1")
             # Don't check if EnablePrivCount is off: other instances might
             # want it to stay on
@@ -2231,6 +2245,8 @@ class TorControlServerProtocol(LineOnlyReceiver, TorControlProtocol):
     250 OK
     SETCONF PrivCountCircuitSampleRate=0.5
     250 OK
+    SETCONF PrivCountMaxCellEventsPerCircuit=25
+    250 OK
     GETINFO
     250 OK
     GETINFO fingerprint
@@ -2499,6 +2515,7 @@ class TorControlServerProtocol(LineOnlyReceiver, TorControlProtocol):
                 elif (len(parts) == 2 and
                       (parts[1].lower().startswith("enableprivcount") or
                        parts[1].lower().startswith("__reloadtorrconsighup") or
+                       parts[1].lower().startswith("privcountmaxcelleventspercircuit") or
                        parts[1].lower().startswith("privcountcircuitsamplerate"))):
                     # just ignore the value
                     self.sendLine("250 OK")

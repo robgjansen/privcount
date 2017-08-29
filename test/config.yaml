@@ -48,6 +48,7 @@ tally_server:
     #sigma_decrease_tolerance: 1.0e-6 # (default: 1.0e-6) the sigma value decrease that the node will tolerate before enforcing a delay
     continue: 2 # start another collection phase after finishing a previous collection phase. If this value is an integer, run that many rounds before stopping. (The TS always runs at least 1 round.)
     circuit_sample_rate: 1.0 # must be between 0.0 and 1.0. Smaller values sample fewer circuits. The injector ignores this option.
+    max_cell_events_per_circuit: 25 # Limit cells from Tor. Can be negative to receive all cells from Tor. The injector ignores this option.
     # optional overrides:
     key: 'keys/ts.pem' # path to the rsa private key
     cert: 'keys/ts.cert' # path to the public key certificate

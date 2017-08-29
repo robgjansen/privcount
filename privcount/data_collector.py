@@ -254,6 +254,7 @@ class DataCollector(ReconnectingClientFactory, PrivCountClient):
                                      self.config['event_source'],
                                      self.config['rotate_period'],
                                      self.config['use_setconf'],
+                                     config.get('max_cell_events_per_circuit', -1),
                                      config.get('circuit_sample_rate', 1.0))
 
         defer_time = config['defer_time'] if 'defer_time' in config else 0.0
@@ -408,7 +409,7 @@ class Aggregator(ReconnectingClientFactory):
 
     def __init__(self, counters, traffic_model_config, sk_uids,
                  noise_weight, modulus, tor_control_port, rotate_period,
-                 use_setconf, circuit_sample_rate):
+                 use_setconf, max_cell_events_per_circuit, circuit_sample_rate):
         self.secure_counters = SecureCounters(counters, modulus,
                                               require_generate_noise=True)
         self.collection_counters = counters
@@ -423,6 +424,7 @@ class Aggregator(ReconnectingClientFactory):
 
         self.noise_weight_config = noise_weight
         self.noise_weight_value = None
+        self.max_cell_events_per_circuit = int(max_cell_events_per_circuit)
         self.circuit_sample_rate = float(circuit_sample_rate)
 
         self.connector = None
@@ -589,6 +591,20 @@ class Aggregator(ReconnectingClientFactory):
         rely on the torrc or another PrivCount instance to set EnablePrivCount.
         '''
         return self.use_setconf
+
+    def get_max_cell_events_per_circuit(self):
+        '''
+        Returns the PrivCountMaxCellEventsPerCircuit, an integer number in
+        [-INT_MAX, INT_MAX]. Defaults to -1 (send all cell events for each circuit).
+        '''
+        # check that the value is valid
+        assert self.max_cell_events_per_circuit is not None
+        # check that we can apply non-default values
+        if (not self.get_use_setconf() and
+            self.max_cell_events_per_circuit >= 0):
+            logging.warning("PrivCountMaxCellEventsPerCircuit {} ignored because use_setconf is False."
+                            .format(self.max_cell_events_per_circuit))
+        return self.max_cell_events_per_circuit
 
     def get_circuit_sample_rate(self):
         '''
@@ -1675,7 +1691,7 @@ class Aggregator(ReconnectingClientFactory):
 
         # Validate the mandatory cell-specific fields
 
-        
+
         if not is_flag_valid("IsSentFlag",
                              fields, event_desc,
                              is_mandatory=True):
@@ -1758,7 +1774,7 @@ class Aggregator(ReconnectingClientFactory):
           RelayCellPayloadByteCount, RelayCellStreamId, RelayCellCommandString,
           IsRecognizedFlag, WasRelayCryptSuccessfulFlag
         TODO: See doc/TorEvents.markdown for all field names and definitions.
-        
+
         Returns True if an event was successfully processed (or ignored).
         Never returns False: we prefer to warn about malformed events and
         continue processing.
@@ -2021,7 +2037,7 @@ class Aggregator(ReconnectingClientFactory):
           {Inbound,Outbound}Exit{Cell,Byte}Count,
           {Inbound,Outbound}DirByteCount
         TODO: See doc/TorEvents.markdown for all field names and definitions.
-        
+
         Calls _handle_legacy_exit_circuit_event to increment legacy counters
         that were based on the legacy PRIVCOUNT_CIRCUIT_ENDED event.
 

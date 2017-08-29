@@ -193,6 +193,10 @@ class TallyServer(ServerFactory, PrivCountServer):
             assert ts_conf['circuit_sample_rate'] >= 0.0
             assert ts_conf['circuit_sample_rate'] <= 1.0
 
+            ts_conf.setdefault('max_cell_events_per_circuit', -1)
+            ts_conf['max_cell_events_per_circuit'] = \
+                int(ts_conf['max_cell_events_per_circuit'])
+
             # the counter bin file
             if 'counters' in ts_conf:
                 ts_conf['counters'] = normalise_path(ts_conf['counters'])
@@ -924,6 +928,7 @@ class TallyServer(ServerFactory, PrivCountServer):
                                                 dc_uids,
                                                 counter_modulus(),
                                                 clock_padding,
+                                                self.config['max_cell_events_per_circuit'],
                                                 self.config['circuit_sample_rate'],
                                                 self.config)
         self.collection_phase.start()
@@ -1018,7 +1023,8 @@ class CollectionPhase(object):
 
     def __init__(self, period, counters_config, traffic_model_config, noise_config,
                  noise_weight_config, dc_threshold_config, sk_uids,
-                 sk_public_keys, dc_uids, modulus, clock_padding, circuit_sample_rate,
+                 sk_public_keys, dc_uids, modulus, clock_padding,
+                 max_cell_events_per_circuit, circuit_sample_rate,
                  tally_server_config):
         # store configs
         self.period = period
@@ -1033,6 +1039,7 @@ class CollectionPhase(object):
         self.dc_uids = dc_uids
         self.modulus = modulus
         self.clock_padding = clock_padding
+        self.max_cell_events_per_circuit = max_cell_events_per_circuit
         self.circuit_sample_rate = circuit_sample_rate
         # make a deep copy, so we can delete unnecesary keys
         self.tally_server_config = deepcopy(tally_server_config)
@@ -1230,6 +1237,7 @@ class CollectionPhase(object):
             config['dc_threshold'] = self.dc_threshold_config
             config['defer_time'] = self.clock_padding
             config['collect_period'] = self.period
+            config['max_cell_events_per_circuit'] = self.max_cell_events_per_circuit
             config['circuit_sample_rate'] = self.circuit_sample_rate
             logging.info("sending start comand with {} counters ({} bins) and requesting {} shares to data collector {}"
                          .format(len(config['counters']),

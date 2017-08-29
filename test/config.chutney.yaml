@@ -29,6 +29,8 @@ tally_server:
     delay_period: 86400
     # Ignore some circuits, so we test this feature
     circuit_sample_rate: 0.5
+    # set a cell limit, so we test this feature
+    max_cell_events_per_circuit: 25
     key: 'keys/ts.pem'
     cert: 'keys/ts.cert'
     # if the key file does not exist, the TS creates a file with a random key
