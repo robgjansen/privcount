@@ -3,6 +3,7 @@
 
 import sys, os, argparse, json
 from itertools import cycle
+from math import sqrt
 # NOTE see plotting imports below in import_plotting()
 
 """
@@ -125,7 +126,7 @@ def run_plot(args):
         fin.close()
 
         for name in histograms.keys():
-            plot_info.setdefault(name, {'datasets':[], 'dataset_colors':[], 'dataset_labels':[], 'bin_labels':[]})
+            plot_info.setdefault(name, {'datasets':[], 'error':0, 'dataset_colors':[], 'dataset_labels':[], 'bin_labels':[]})
             plot_info[name]['dataset_colors'].append(dataset_color)
             plot_info[name]['dataset_labels'].append(dataset_label)
 
@@ -143,6 +144,11 @@ def run_plot(args):
                 bin_labels.append("[{},{})".format(left, right))
                 dataset.append(val)
             plot_info[name]['datasets'].append(dataset)
+
+            if 'sigma' in histograms[name]:
+                sigma = float(histograms[name]['sigma'])
+                plot_info[name]['error'] = int(round(2 * sqrt(3) * sigma)) %  1000000000000000
+
             if len(plot_info[name]['bin_labels']) == 0:
                 plot_info[name]['bin_labels'] = bin_labels
 
@@ -157,10 +163,10 @@ def run_plot(args):
     '''
     for name in sorted(plot_info.keys()):
         dat = plot_info[name]
-        plot_bar_chart(page, dat['datasets'], dat['dataset_labels'], dat['dataset_colors'], dat['bin_labels'], title=name)
+        plot_bar_chart(page, dat['datasets'], dat['dataset_labels'], dat['dataset_colors'], dat['bin_labels'], err=dat['error'], title=name)
     page.close()
 
-def plot_bar_chart(page, datasets, dataset_labels, dataset_colors, x_group_labels, title=None, xlabel='Bins', ylabel='Counts'):
+def plot_bar_chart(page, datasets, dataset_labels, dataset_colors, x_group_labels, err=0, title=None, xlabel='Bins', ylabel='Counts'):
     assert len(datasets) == len(dataset_colors) == len(dataset_labels)
     for dataset in datasets:
         assert len(dataset) == len(datasets[0])
@@ -175,7 +181,7 @@ def plot_bar_chart(page, datasets, dataset_labels, dataset_colors, x_group_label
     bars = []
 
     for i in xrange(len(datasets)):
-        bar = axis.bar(x_group_locations + (width*i), datasets[i], width, color=dataset_colors[i])
+        bar = axis.bar(x_group_locations + (width*i), datasets[i], width, yerr=err, color=dataset_colors[i], error_kw=dict(ecolor='pink', lw=3, capsize=6, capthick=3))
         bars.append(bar)
 
     if title is not None:
