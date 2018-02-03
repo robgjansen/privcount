@@ -11,7 +11,7 @@ import logging
 from time import time, clock
 from heapq import heappush, heappop
 
-from privcount.counter import register_dynamic_counter, CELL_EVENT, STREAM_EVENT, SecureCounters
+from privcount.counter import register_dynamic_counter, VITERBI_EVENT, SecureCounters
 SINGLE_BIN = SecureCounters.SINGLE_BIN
 
 def check_traffic_model_config(model_config):
@@ -76,7 +76,7 @@ class TrafficModel(object):
 
     def register_counters(self):
         for label in self.get_dynamic_counter_labels():
-            register_dynamic_counter(label, { CELL_EVENT, STREAM_EVENT })
+            register_dynamic_counter(label, { VITERBI_EVENT })
 
     def get_dynamic_counter_template_label_mapping(self):
         '''
@@ -333,7 +333,7 @@ class TrafficModel(object):
         '''
         return (((amount + factor/2)/factor)*factor)
 
-    def _increment_traffic_counters(self, bundles, likliest_states, secure_counters):
+    def increment_traffic_counters(self, viterbi_result, secure_counters):
         '''
         Increment the appropriate secure counter labels for this model given the observed
         list of events specifying when bytes were transferred in Tor.
@@ -353,6 +353,8 @@ class TrafficModel(object):
           - increment 1 for each state-to-state transition:
             Blabbing_Blabbing, Blabbing_Blabbing, Blabbing_Thinking
         '''
+        # TODO FIXME XXX this should be the only remaining function to edit
+        return
 
         num_states = len(likliest_states)
         i = 0
@@ -413,146 +415,6 @@ class TrafficModel(object):
                 # upkeep
                 num_packets_in_bundle -= 1
                 i += 1
-
-    def _store_new_packet_bundle(self, circuit_id, stream_id, is_sent,
-            micros_since_prev_cell, bundle_ts, payload_bytes_last_packet):
-        num_packets = 1
-        packet_bundle = [is_sent, micros_since_prev_cell, bundle_ts,
-                        num_packets, payload_bytes_last_packet]
-        self.packets.setdefault(circuit_id, {}).setdefault(stream_id, []).append(packet_bundle)
-
-        # store an entry so we can evict the stream if it persists for too long
-        if len(self.packets[circuit_id][stream_id]) == 1:
-            # min heap sorted by time (the first element in the tuple)
-            entry = (bundle_ts, circuit_id, stream_id)
-            heappush(self.pheap, entry)
-
-    def _clear_expired_bundles(self):
-        cleanup_count = 0
-
-        while len(self.pheap) > 0:
-            entry = self.pheap[0] # peek the next entry
-            bundle_ts, circuit_id, stream_id = entry
-
-            # check if the next item in the min heap expired
-            # if streams are STREAM_EVICT_TIME seconds old, clear them
-            if time() - bundle_ts >= TrafficModel.STREAM_EVICT_TIME:
-                # remove the heap entry
-                heappop(self.pheap)
-
-                # check if we are still actually storing the packet bundles
-                if circuit_id in self.packets:
-                    if stream_id in self.packets[circuit_id]:
-                        # we are storing the stream data yet, clear it now
-                        # TODO: secure delete?
-                        self.packets[circuit_id].pop(stream_id, None)
-                        cleanup_count += 1
-                    # clear out any leftover empty circuit keys
-                    if len(self.packets[circuit_id]) == 0:
-                        self.packets.pop(circuit_id, None)
-            else:
-                break
-
-        if cleanup_count > 0:
-            desc = "stream" if cleanup_count == 1 else "streams"
-            logging.info("cleared stale packet bundles on {} {}".format(cleanup_count, desc))
-
-    def handle_cell(self, circuit_id, stream_id, is_sent, payload_bytes, cell_ts):
-        # is_sent=True means a cell was sent toward the client side
-        # is_sent=False means a cell was received from the client side
-
-        if circuit_id not in self.packets or stream_id not in self.packets[circuit_id]:
-            # this is the first packet on the stream
-            self._store_new_packet_bundle(circuit_id, stream_id, is_sent, long(0), cell_ts, payload_bytes)
-        else:
-            # we already had some packets.
-            # lets figure out if we can add the new cell to the previous bundle,
-            # or if we need to start a new bundle.
-            prev_packet_bundle = self.packets[circuit_id][stream_id][-1]
-
-            secs_since_prev_cell = cell_ts - prev_packet_bundle[2]
-            micros_since_prev_cell = max(long(0), long(secs_since_prev_cell * 1000000))
-
-            if is_sent == prev_packet_bundle[0] and \
-                    micros_since_prev_cell <= TrafficModel.PACKET_ARRIVAL_TIME_TOLERENCE:
-                # cell occured at the same time as the previous,
-                # lets assume it arrived in the same packet
-                prev_packet_bundle[4] += payload_bytes
-                while prev_packet_bundle[4] > TrafficModel.PACKET_BYTE_COUNT:
-                    spillover = prev_packet_bundle[4] - TrafficModel.PACKET_BYTE_COUNT
-                    prev_packet_bundle[3] += 1
-                    prev_packet_bundle[4] = spillover
-
-            else:
-                # cell direction or time is different, need a new bundle
-                self._store_new_packet_bundle(circuit_id, stream_id, is_sent,
-                        micros_since_prev_cell, cell_ts, payload_bytes)
-
-    def handle_stream(self, circuit_id, stream_id, stream_end_ts, secure_counters):
-        # use our observations to find the most likely path through the HMM,
-        # and then count some aggregate statistics about that path
-
-        if circuit_id in self.packets:
-            if stream_id in self.packets[circuit_id]:
-                # get the list of packet bundles
-                bundles = self.packets[circuit_id].pop(stream_id)
-                if bundles is not None and len(bundles) > 0:
-                    # add the ending state
-                    prev_packet_bundle = bundles[-1]
-
-                    secs_since_prev_cell = stream_end_ts - prev_packet_bundle[2]
-                    micros_since_prev_cell = max(long(0), long(secs_since_prev_cell * 1000000))
-
-                    end_bundle = [None, micros_since_prev_cell, stream_end_ts, 1, 0]
-                    bundles.append(end_bundle)
-
-                    # we log a warning here in case PrivCount hangs in vitterbi
-                    # (it could hang processing packets, but that's very unlikely)
-                    stream_packet_count = sum(bundle[3] for bundle in bundles)
-                    if stream_packet_count > TrafficModel.MAX_STREAM_PACKET_COUNT:
-                        # round the packet count to the nearest
-                        # TrafficModel.MAX_STREAM_PACKET_COUNT, for at least a little user
-                        # protection
-                        rounded_stream_packet_count = TrafficModel._integer_round(
-                                                      stream_packet_count,
-                                                      TrafficModel.MAX_STREAM_PACKET_COUNT)
-                        logging.info("Large stream packet count: ~{} packets in {} bundles. Stream packet limit is {} packets."
-                                     .format(rounded_stream_packet_count,
-                                             len(bundles),
-                                             TrafficModel.MAX_STREAM_PACKET_COUNT))
-
-                    # run viterbi to get the likliest path through our model given the observed delays
-                    viterbi_start_time = clock()
-                    likliest_states = self._run_viterbi(bundles)
-
-                    # increment result counters
-                    counter_start_time = clock()
-                    if likliest_states is not None and len(likliest_states) > 0:
-                        self._increment_traffic_counters(bundles, likliest_states, secure_counters)
-
-                    algo_end_time = clock()
-                    algo_elapsed = algo_end_time - viterbi_start_time
-                    viterbi_elapsed = counter_start_time - viterbi_start_time
-                    counter_elapsed = algo_end_time - counter_start_time
-
-                    if algo_elapsed > TrafficModel.MAX_STREAM_PROCESSING_TIME:
-                        rounded_num_packets = TrafficModel._integer_round(
-                                                      stream_packet_count,
-                                                      TrafficModel.MAX_STREAM_PACKET_COUNT)
-                        logging.warning("Long stream processing time: {:.1f} seconds to process ~{} packets exceeds limit of {:.1f} seconds. Breakdown: viterbi {:.1f} counter {:.1f}."
-                                        .format(algo_elapsed, rounded_num_packets,
-                                                TrafficModel.MAX_STREAM_PROCESSING_TIME,
-                                                viterbi_elapsed, counter_elapsed))
-                    # TODO: secure delete?
-                    #del likliest_states
-                # TODO: secure delete?
-                #del bundles
-
-            if len(self.packets[circuit_id]) == 0:
-                self.packets.pop(circuit_id, None)
-
-        # take this opportunity to clear any streams that stuck around too long
-        self._clear_expired_bundles()
 
     def update_from_tallies(self, tallies, trans_inertia=0.1, emit_inertia=0.1):
         '''

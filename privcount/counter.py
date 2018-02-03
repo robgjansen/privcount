@@ -252,6 +252,7 @@ CIRCUIT_EVENT = 'PRIVCOUNT_CIRCUIT_CLOSE'
 CONNECTION_EVENT = 'PRIVCOUNT_CONNECTION_CLOSE'
 HSDIR_STORE_EVENT = 'PRIVCOUNT_HSDIR_CACHE_STORE'
 HSDIR_FETCH_EVENT = 'PRIVCOUNT_HSDIR_CACHE_FETCH'
+VITERBI_EVENT = 'PRIVCOUNT_VITERBI'
 
 # Unused events
 # PrivCount never used this event, it was used by PrivEx
@@ -272,6 +273,7 @@ def get_valid_events():
                   CONNECTION_EVENT,
                   HSDIR_STORE_EVENT,
                   HSDIR_FETCH_EVENT,
+                  VITERBI_EVENT,
                   # Unused events
                   DNS_EVENT,
                   LEGACY_CIRCUIT_EVENT,
@@ -287,11 +289,12 @@ PRIVCOUNT_COUNTER_EVENTS = {
 # these counters depend on bytes transferred event
 # they are updated in _handle_circuit_cell_event_traffic_model
 
+# these counters are for the traffic model code
 # model-specific counters are added in register_dynamic_counter
-'ExitStreamTrafficModelEmissionCount' : { CELL_EVENT, STREAM_EVENT },
-'ExitStreamTrafficModelTransitionCount' : { CELL_EVENT, STREAM_EVENT },
-'ExitStreamTrafficModelLogDelayTime' : { CELL_EVENT, STREAM_EVENT },
-'ExitStreamTrafficModelSquaredLogDelayTime' : { CELL_EVENT, STREAM_EVENT },
+'ExitStreamTrafficModelEmissionCount' : { VITERBI_EVENT },
+'ExitStreamTrafficModelTransitionCount' : { VITERBI_EVENT },
+'ExitStreamTrafficModelLogDelayTime' : { VITERBI_EVENT },
+'ExitStreamTrafficModelSquaredLogDelayTime' : { VITERBI_EVENT },
 
 'ExitStreamCount' : { STREAM_EVENT },
 'ExitStreamByteCount' : { STREAM_EVENT },

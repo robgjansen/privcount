@@ -1641,7 +1641,7 @@ class TorControlClientProtocol(LineOnlyReceiver, TorControlProtocol):
         '''
         return self.state is not None and self.state != 'disconnected'
 
-    def startCollection(self, counter_list, event_list=None):
+    def startCollection(self, counter_list, event_list=None, traffic_model=None):
         '''
         Enable events for all the events required by counter_list, and all
         events explictly specified in event_list. After every successful
@@ -1678,6 +1678,7 @@ class TorControlClientProtocol(LineOnlyReceiver, TorControlProtocol):
                               0 if event_list is None else len(event_list),
                               "(none)" if event_list is None else
                               " ".join(event_list)))
+        self.traffic_model = traffic_model
         self.enableEvents()
 
     def stopCollection(self, clear_events=True):
@@ -1692,6 +1693,9 @@ class TorControlClientProtocol(LineOnlyReceiver, TorControlProtocol):
         if clear_events:
             self.collection_events = None
         self.disableEvents()
+        # set to None after disable events, so we know to send a command
+        # to Tor to delete the model
+        self.traffic_model = None
         # let the user know that we're waiting
         logging.info("Waiting for next PrivCount collection to start")
 
@@ -1714,6 +1718,10 @@ class TorControlClientProtocol(LineOnlyReceiver, TorControlProtocol):
             use_setconf = self.getConfiguredValue('get_use_setconf',
                                                   'use SETCONF',
                                                   default=True)
+            if self.traffic_model is not None:
+                # avoid ',', ' ', '=', '\n', and '\r'
+                tmodel_str = json.dumps(self.traffic_model, separators=(';', ':'))
+                self.sendLine("SET_TMODEL TRUE {}".format(tmodel_str))
             if use_setconf:
                 circuit_sample_rate = self.getConfiguredValue(
                                                   'get_circuit_sample_rate',
@@ -1781,6 +1789,9 @@ class TorControlClientProtocol(LineOnlyReceiver, TorControlProtocol):
                 if max_cell_events_per_circuit >= 0:
                     self.sendLine("SETCONF PrivCountMaxCellEventsPerCircuit=-1")
                 self.sendLine("SETCONF __ReloadTorrcOnSIGHUP=1")
+            if self.traffic_model is not None:
+                # we had a tmode, so lets shut it off
+                self.sendLine("SET_TMODEL FALSE")
             # Don't check if EnablePrivCount is off: other instances might
             # want it to stay on
             self.active_events = None

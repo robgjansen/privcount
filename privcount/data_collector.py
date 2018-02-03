@@ -432,7 +432,9 @@ class Aggregator(ReconnectingClientFactory):
 
         # the traffic model is optional
         self.traffic_model = None
+        self.traffic_model_config = None
         if traffic_model_config is not None:
+            self.traffic_model_config = deepcopy(traffic_model_config)
             self.traffic_model = TrafficModel(traffic_model_config)
 
         # initialise parameters
@@ -561,7 +563,7 @@ class Aggregator(ReconnectingClientFactory):
         self.protocol = TorControlClientProtocol(self)
         # if we didn't build the protocol until after starting
         if self.connector is not None:
-            self.protocol.startCollection(self.collection_counters)
+            self.protocol.startCollection(self.collection_counters, traffic_model=self.traffic_model_config)
         return self.protocol
 
     def startFactory(self):
@@ -585,7 +587,7 @@ class Aggregator(ReconnectingClientFactory):
         rotator_deferred.addErrback(errorCallback)
         # if we've already built the protocol before starting
         if self.protocol is not None:
-            self.protocol.startCollection(self.collection_counters)
+            self.protocol.startCollection(self.collection_counters, traffic_model=self.traffic_model_config)
 
     def _stop_protocol(self):
         '''
@@ -1138,7 +1140,8 @@ class Aggregator(ReconnectingClientFactory):
             event_code == 'PRIVCOUNT_CIRCUIT_CLOSE' or
             event_code == 'PRIVCOUNT_CONNECTION_CLOSE' or
             event_code == 'PRIVCOUNT_HSDIR_CACHE_STORE' or
-            event_code == 'PRIVCOUNT_HSDIR_CACHE_FETCH'):
+            event_code == 'PRIVCOUNT_HSDIR_CACHE_FETCH' or
+            event_code == 'PRIVCOUNT_VITERBI'):
             fields = parse_tagged_event(items)
         else:
             logging.warning("Unexpected {} event when parsing: '{}'"
@@ -1160,6 +1163,8 @@ class Aggregator(ReconnectingClientFactory):
             return self._handle_hsdir_store_event(fields)
         elif event_code == 'PRIVCOUNT_HSDIR_CACHE_FETCH':
             return self._handle_hsdir_fetch_event(fields)
+        elif event_code == 'PRIVCOUNT_VITERBI':
+            return self._handle_viterbi_event(fields)
         else:
             logging.warning("Unexpected {} event when handling: '{}'"
                             .format(event_code, " ".join(items)))
@@ -1357,10 +1362,6 @@ class Aggregator(ReconnectingClientFactory):
         self._increment_stream_end_counters(stream_class,
                                             totalbw, writebw, readbw,
                                             ratio, lifetime)
-
-        # if we have a traffic model object, pass on the appropriate data
-        if self.traffic_model is not None and circid > 0 and strmid > 0:
-            self.traffic_model.handle_stream(circid, strmid, end, self.secure_counters)
 
         # collect IP version and hostname statistics
         remote_ip_value = validate_ip_address(remote_ip)
@@ -2155,6 +2156,31 @@ class Aggregator(ReconnectingClientFactory):
         # if everything passed, we're ok
         return True
 
+    def _handle_viterbi_event(self, fields):
+        event_desc = "in PRIVCOUNT_VITERBI event"
+
+        # we must have a traffic model to process the event
+        if self.traffic_model is None:
+            return False
+
+        # the string should not be empty
+        if not is_string_valid("LikliestStates",
+                               fields, event_desc,
+                               is_mandatory=True,
+                               min_len=1):
+            return False
+
+        # get the result string
+        viterbi_result = get_string_value("LikliestStates",
+                                 fields, event_desc,
+                                 is_mandatory=True)
+
+        # let the trffic model decode the viterbi result
+        self.traffic_model.increment_traffic_counters(viterbi_result, self.secure_counters)
+
+        # everything is OK
+        return True
+
     def _handle_circuit_cell_event(self, fields):
         '''
         Process a PRIVCOUNT_CIRCUIT_CELL event
@@ -2219,48 +2245,6 @@ class Aggregator(ReconnectingClientFactory):
         # have defaults
 
         # Increment counters for optional fields that don't have defaults
-
-        if self.traffic_model is not None:
-            # only exits count traffic model cells
-            is_exit = get_flag_value("IsExitFlag",
-                                     fields, event_desc,
-                                     is_mandatory=False,
-                                     default=False)
-            if is_exit:
-                # cells should only ever be on the inbound circuit-side of the exit
-                # we only want to count cells on one side so we don't double count
-                is_outbound = get_flag_value("IsOutboundFlag",
-                                         fields, event_desc,
-                                         is_mandatory=False,
-                                         default=False)
-                if not is_outbound:
-                    # we only care about external stream data, not protocol cells
-                    command = get_string_value("RelayCellCommandString",
-                                                  fields, event_desc,
-                                                  is_mandatory=False,
-                                                  default="NONE")
-                    if command == "DATA":
-                        # now the traffic model wants the cell
-                        circuit_id = get_int_value("PreviousCircuitId",
-                                                fields, event_desc,
-                                                is_mandatory=False,
-                                                default=0)
-                        stream_id = get_int_value("RelayCellStreamId",
-                                                fields, event_desc,
-                                                is_mandatory=False,
-                                                default=0)
-                        payload_bytes = get_int_value("RelayCellPayloadByteCount",
-                                                fields, event_desc,
-                                                is_mandatory=False,
-                                                default=0)
-                        cell_time = get_float_value("EventTimestamp",
-                                                fields, event_desc,
-                                                is_mandatory=False,
-                                                default=0)
-                        if circuit_id > 0 and stream_id > 0 and \
-                                payload_bytes > 0 and cell_time > 0.0:
-                            self.traffic_model.handle_cell(circuit_id, stream_id,
-                                                    is_sent, payload_bytes, cell_time)
 
         # we processed and handled the event
         return True
