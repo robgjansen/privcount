@@ -20,7 +20,7 @@ def check_traffic_model_config(model_config):
     for this model, False otherwise.
     '''
     traffic_model_valid = True
-    for k in ['states', 'emission_probability', 'transition_probability', 'start_probability']:
+    for k in ['state_space', 'observation_space', 'emission_probability', 'transition_probability', 'start_probability']:
         if k not in model_config:
             traffic_model_valid = False
     return traffic_model_valid
@@ -61,7 +61,8 @@ class TrafficModel(object):
             return None
 
         self.config = model_config
-        self.states = self.config['states']
+        self.state_s = self.config['state_space']
+        self.obs_s = self.config['observation_space']
         self.start_p = self.config['start_probability']
         self.trans_p = self.config['transition_probability']
         self.emit_p = self.config['emission_probability']
@@ -69,7 +70,7 @@ class TrafficModel(object):
         self.pheap = []
 
         # build map of all the possible transitions, they are the only ones we need to compute or track
-        self.incoming = { st:set() for st in self.states }
+        self.incoming = { st:set() for st in self.state_s }
         for s in self.trans_p:
             for t in self.trans_p[s]:
                 if self.trans_p[s][t] > 0. : self.incoming[t].add(s)
@@ -245,7 +246,7 @@ class TrafficModel(object):
         total_num_obs += 1
         current_bundle_num_packets -= 1
 
-        for st in self.states:
+        for st in self.state_s:
             if st in self.start_p and self.start_p[st] > 0 and \
                     st in self.emit_p and direction in self.emit_p[st]:
                 # updated emit_p here
@@ -289,7 +290,7 @@ class TrafficModel(object):
             total_num_obs += 1
 
             V.append({})
-            for st in self.states:
+            for st in self.state_s:
                 max_tr_prob = max(V[t-1][prev_st]["prob"]+math.log(self.trans_p[prev_st][st]) for prev_st in self.incoming[st])
                 for prev_st in self.incoming[st]:
                     if V[t-1][prev_st]["prob"] + math.log(self.trans_p[prev_st][st]) == max_tr_prob:
@@ -509,7 +510,8 @@ class TrafficModel(object):
                 self.start_p[state] = trans_inertia * self.start_p[state]
 
         updated_model_config = {
-            'states': self.states,
+            'state_space': self.state_s,
+            'observation_space': self.obs_s,
             'start_probability': self.start_p,
             'transition_probability': self.trans_p,
             'emission_probability': self.emit_p
