@@ -8,8 +8,7 @@ See LICENSE for licensing information
 import math
 import logging
 
-from time import time, clock
-from heapq import heappush, heappop
+from json import loads
 
 from privcount.counter import register_dynamic_counter, VITERBI_EVENT, SecureCounters
 SINGLE_BIN = SecureCounters.SINGLE_BIN
@@ -30,23 +29,6 @@ class TrafficModel(object):
     A class that represents a hidden markov model (HMM).
     See `test/traffic.model.json` for a simple traffic model that this class can represent.
     '''
-
-    # the approximate number of payload bytes for a packet
-    PACKET_BYTE_COUNT = 1434
-    # assume a packet arrived at the same time if it arrived
-    # within this many microseconds
-    PACKET_ARRIVAL_TIME_TOLERENCE = long(100)
-
-    # the maximum number of packets we will handle in a stream before issuing
-    # a delay warning. On my relays, this takes 10 seconds of processing time
-    # on a large model
-    MAX_STREAM_PACKET_COUNT = 10000
-    # the maximum number of seconds we will take to process a stream before
-    # issuing a delay warning
-    MAX_STREAM_PROCESSING_TIME = 10.0
-    # the maximum number of seconds we are willing to store cells for a stream
-    # before considering it stale and evicting its stored cell data
-    STREAM_EVICT_TIME = 3600.0
 
     def __init__(self, model_config):
         '''
@@ -213,120 +195,6 @@ class TrafficModel(object):
 
         return bins_dict
 
-    def _run_viterbi(self, bundles):
-        '''
-        Each bundle in a list of packet 'bundles' represents many packets that arrived at the same time:
-            packet_bundle = [is_sent, micros_since_prev_cell, bundle_ts, num_packets, payload_bytes_last_packet]
-        Run the viterbi dynamic programming on a list of such bundles.
-
-        Viterbi normally expects a list of packet observations of the form ('+' or '-', delay_time), e.g.:
-            [('+', 10), ('+', 20), ('+', 50), ('+', 1000)]
-        Viterbi determines which path through the HMM has the highest probability, i.e., closest match to these observations.
-        '''
-        SQRT_2_PI = math.sqrt(2*math.pi)
-        V = [{}]
-        total_num_obs = 0
-        bundle_i = 0
-
-        current_bundle = bundles[bundle_i]
-        current_bundle_num_packets = current_bundle[3]
-
-        # figure out probabilities for starting state
-        # first get info from first observation
-        if current_bundle[0] == None:
-            direction = 'F'
-        else:
-            direction = '-' if current_bundle[0] else '+'
-
-        delay = current_bundle[1]
-        if delay <= 2: dx = 1
-        else: dx = int(math.exp(int(math.log(delay))))
-
-        # we 'used up' the first observation
-        total_num_obs += 1
-        current_bundle_num_packets -= 1
-
-        for st in self.state_s:
-            if st in self.start_p and self.start_p[st] > 0 and \
-                    st in self.emit_p and direction in self.emit_p[st]:
-                # updated emit_p here
-                (dp, mu, sigma) = self.emit_p[st][direction]
-                delay_logp = -math.log( dx * sigma * SQRT_2_PI ) - 0.5 * ( ( math.log( dx ) - mu ) / sigma ) ** 2
-                fitprob = math.log(dp) + delay_logp
-                V[0][st] = {"prob": math.log(self.start_p[st]) + fitprob, "prev": None}
-            else:
-                V[0][st] = {"prob": float("-inf"), "prev": None }
-
-        # Run Viterbi when t > 0
-        t = 0 # starts at 0 but is immediately incremented below if we have another packet
-        while True:
-            # get the next packet, which could be in the same 'bundled' set of packets
-            while current_bundle is not None and current_bundle_num_packets <= 0:
-                # current bundle was used up
-                current_bundle = None
-                bundle_i += 1
-                # ran out of packets, get the next bundle
-                if bundle_i < len(bundles):
-                    current_bundle = bundles[bundle_i]
-                    if current_bundle:
-                        current_bundle_num_packets = current_bundle[3]
-
-            # break if we have no more packets
-            if current_bundle is None:
-                break
-
-            # this represents the next observation
-            t += 1
-            if current_bundle[0] == None:
-                direction = 'F'
-            else:
-                direction = '-' if current_bundle[0] else '+'
-            delay = current_bundle[1]
-            if delay <= 2: dx = 1
-            else: dx = int(math.exp(int(math.log(delay))))
-
-            # we 'used up' this observation
-            current_bundle_num_packets -= 1
-            total_num_obs += 1
-
-            V.append({})
-            for st in self.state_s:
-                max_tr_prob = max(V[t-1][prev_st]["prob"]+math.log(self.trans_p[prev_st][st]) for prev_st in self.incoming[st])
-                for prev_st in self.incoming[st]:
-                    if V[t-1][prev_st]["prob"] + math.log(self.trans_p[prev_st][st]) == max_tr_prob:
-                        if direction not in self.emit_p[st]:
-                            V[t][st] = {"prob": float("-inf"), "prev": prev_st}
-                            break
-                        (dp, mu, sigma) = self.emit_p[st][direction]
-                        delay_logp = -math.log( dx * sigma * SQRT_2_PI ) - 0.5 * ( ( math.log( dx ) - mu ) / sigma ) ** 2
-                        fitprob = math.log(dp) + delay_logp
-                        max_prob = max_tr_prob + fitprob
-                        V[t][st] = {"prob": max_prob, "prev": prev_st}
-                        break
-
-        #for line in dptable(V):
-        #    print line
-        opt = []
-        # The highest probability
-        max_prob = max(value["prob"] for value in V[-1].values())
-        previous = None
-        # Get most probable state and its backtrack
-        for st, data in V[-1].items():
-            if data["prob"] == max_prob:
-                opt.append(st)
-                previous = st
-                break
-        # Follow the backtrack till the first observation
-        for t in range(len(V) - 2, -1, -1):
-            opt.insert(0, V[t + 1][previous]["prev"])
-            previous = V[t + 1][previous]["prev"]
-
-        if len(opt) != total_num_obs:
-            logging.warning("We saw stream with {} observations but computed {} states".format(total_num_obs, len(opt)))
-
-        #print 'The steps of states are ' + ' '.join(opt) + ' with highest probability of %s' % max_prob
-        return opt # list of highest probable states, in order
-
     @staticmethod
     def _integer_round(amount, factor):
         '''
@@ -338,10 +206,17 @@ class TrafficModel(object):
         '''
         Increment the appropriate secure counter labels for this model given the observed
         list of events specifying when bytes were transferred in Tor.
-          likliest_states: the likliest path through our model given the observed delays
+          viterbi_result: the viterbi path through our model given the observed delays
           secure_counters: the SecureCounters object whose counters should get incremented
             as a result of the observed bytes events
 
+        The viterbi_result is encoded as a json string:
+          '[["m10s1";"+";35432];["m2s4";"+";0];["m4s2";"-";100];["m4sEnd";"F";0]]'
+
+        This is a list of observations, where each observation has a state name,
+        a direction code, and a delay value.
+
+        --old documentation--
         example observations = [('+', 20), ('+', 10), ('+',50), ('+',1000)]
         example viterbi result: Blabbing Blabbing Blabbing Thinking
         then count the following 4:
@@ -354,68 +229,64 @@ class TrafficModel(object):
           - increment 1 for each state-to-state transition:
             Blabbing_Blabbing, Blabbing_Blabbing, Blabbing_Thinking
         '''
-        # TODO FIXME XXX this should be the only remaining function to edit
-        return
 
-        num_states = len(likliest_states)
-        i = 0
+        # python lets you encode with non-default separators, but not decode
+        viterbi_result = viterbi_result.replace(';',',')
+        path = loads(viterbi_result)
 
-        for current_bundle in bundles:
-            dir_code = '-' if current_bundle[0] else '+'
-            # delay is in microseconds
-            delay = current_bundle[1]
-            num_packets_in_bundle = current_bundle[3]
+        num_states = len(path)
 
-            while num_packets_in_bundle > 0:
-                state = likliest_states[i]
+        for i, packet in enumerate(path):
+            if len(packet) < 3:
+                continue
 
-                # delay of 0 indicates the packets were observed at the same time
-                # log(x=0) is undefined, and log(x<1) is negative
-                # we don't want to count negatives, so override delay if needed
-                ldelay = 0 if delay < 1 else int(math.log(delay))
+            state, direction, delay = str(packet[0]), str(packet[1]), int(packet[2])
 
-                secure_counters.increment('ExitStreamTrafficModelEmissionCount',
-                                          bin=SINGLE_BIN,
-                                          inc=1)
-                label = 'ExitStreamTrafficModelEmissionCount_{}_{}'.format(state, dir_code)
+            # delay of 0 indicates the packets were observed at the same time
+            # log(x=0) is undefined, and log(x<1) is negative
+            # we don't want to count negatives, so override delay if needed
+            ldelay = 0 if delay < 1 else int(math.log(delay))
+
+            secure_counters.increment('ExitStreamTrafficModelEmissionCount',
+                                      bin=SINGLE_BIN,
+                                      inc=1)
+            label = 'ExitStreamTrafficModelEmissionCount_{}_{}'.format(state, dir_code)
+            secure_counters.increment(label,
+                                      bin=SINGLE_BIN,
+                                      inc=1)
+
+            secure_counters.increment('ExitStreamTrafficModelLogDelayTime',
+                                      bin=SINGLE_BIN,
+                                      inc=ldelay)
+            label = 'ExitStreamTrafficModelLogDelayTime_{}_{}'.format(state, dir_code)
+            secure_counters.increment(label,
+                                      bin=SINGLE_BIN,
+                                      inc=ldelay)
+
+            secure_counters.increment('ExitStreamTrafficModelSquaredLogDelayTime',
+                                      bin=SINGLE_BIN,
+                                      inc=ldelay*ldelay)
+            label = 'ExitStreamTrafficModelSquaredLogDelayTime_{}_{}'.format(state, dir_code)
+            secure_counters.increment(label,
+                                      bin=SINGLE_BIN,
+                                      inc=ldelay*ldelay)
+
+            if i == 0: # track starting transitions
+                label = 'ExitStreamTrafficModelTransitionCount_START_{}'.format(state)
                 secure_counters.increment(label,
                                           bin=SINGLE_BIN,
                                           inc=1)
 
-                secure_counters.increment('ExitStreamTrafficModelLogDelayTime',
+            # track transitions for all but the final state
+            if (i + 1) < len(path) and len(path[i + 1]) >= 3:
+                next_state = str(path[i + 1][0])
+                secure_counters.increment('ExitStreamTrafficModelTransitionCount',
                                           bin=SINGLE_BIN,
-                                          inc=ldelay)
-                label = 'ExitStreamTrafficModelLogDelayTime_{}_{}'.format(state, dir_code)
+                                          inc=1)
+                label = 'ExitStreamTrafficModelTransitionCount_{}_{}'.format(state, next_state)
                 secure_counters.increment(label,
                                           bin=SINGLE_BIN,
-                                          inc=ldelay)
-
-                secure_counters.increment('ExitStreamTrafficModelSquaredLogDelayTime',
-                                          bin=SINGLE_BIN,
-                                          inc=ldelay*ldelay)
-                label = 'ExitStreamTrafficModelSquaredLogDelayTime_{}_{}'.format(state, dir_code)
-                secure_counters.increment(label,
-                                          bin=SINGLE_BIN,
-                                          inc=ldelay*ldelay)
-
-                if i == 0: # track starting transitions
-                    label = 'ExitStreamTrafficModelTransitionCount_START_{}'.format(state)
-                    secure_counters.increment(label,
-                                              bin=SINGLE_BIN,
-                                              inc=1)
-                if (i+1) < num_states:
-                    next_state = likliest_states[i+1]
-                    secure_counters.increment('ExitStreamTrafficModelTransitionCount',
-                                              bin=SINGLE_BIN,
-                                              inc=1)
-                    label = 'ExitStreamTrafficModelTransitionCount_{}_{}'.format(state, next_state)
-                    secure_counters.increment(label,
-                                              bin=SINGLE_BIN,
-                                              inc=1)
-
-                # upkeep
-                num_packets_in_bundle -= 1
-                i += 1
+                                          inc=1)
 
     def update_from_tallies(self, tallies, trans_inertia=0.1, emit_inertia=0.1):
         '''

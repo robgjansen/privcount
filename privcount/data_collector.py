@@ -2164,18 +2164,18 @@ class Aggregator(ReconnectingClientFactory):
             return False
 
         # the string should not be empty
-        if not is_string_valid("LikliestStates",
+        if not is_string_valid("ViterbiPath",
                                fields, event_desc,
                                is_mandatory=True,
                                min_len=1):
             return False
 
         # get the result string
-        viterbi_result = get_string_value("LikliestStates",
+        viterbi_result = get_string_value("ViterbiPath",
                                  fields, event_desc,
                                  is_mandatory=True)
 
-        # let the trffic model decode the viterbi result
+        # let the traffic model decode the viterbi result
         self.traffic_model.increment_traffic_counters(viterbi_result, self.secure_counters)
 
         # everything is OK
