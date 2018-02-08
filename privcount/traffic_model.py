@@ -13,15 +13,84 @@ from json import loads
 from privcount.counter import register_dynamic_counter, VITERBI_EVENT, SecureCounters
 SINGLE_BIN = SecureCounters.SINGLE_BIN
 
+def float_value_is_close(a, b, rel_tol=1e-09, abs_tol=0.0):
+    return abs(a-b) <= max(rel_tol * max(abs(a), abs(b)), abs_tol)
+
 def check_traffic_model_config(model_config):
     '''
-    Return True if the given model_config contains the required keys for incrementing counters
-    for this model, False otherwise.
+    A valid traffic model config mmust contain the required keys for incrementing counters
+    for this model, the start probabilities must sum to 1, and the transition probabilities
+    for each outgoing state must sum to 1. This function returns True if the given
+    model_config is valid, and False otherwise.
     '''
     traffic_model_valid = True
+
     for k in ['state_space', 'observation_space', 'emission_probability', 'transition_probability', 'start_probability']:
         if k not in model_config:
+            logging.warning("Traffic model config does not contain required key '{}'".format(k))
             traffic_model_valid = False
+
+    if 'observation_space' in model_config:
+        obs_space = model_config['observation_space']
+        if '+' not in obs_space or '-' not in obs_space or 'F' not in obs_space:
+            logging.warning("Traffic model config observation space is missing at least one of '+', '-', and 'F'")
+            traffic_model_valid = False
+
+    if 'start_probability' in model_config:
+        start_prob_sum = 0.0
+        for state in model_config['start_probability']:
+            if state not in model_config['state_space']:
+                logging.warning("Traffic model config state space does not contain state '{}' which is used in the start probability array"
+                    .format(state))
+                traffic_model_valid = False
+            start_prob_sum += float(model_config['start_probability'][state])
+        if not float_value_is_close(start_prob_sum, 1.0):
+            logging.warning("Traffic model config start probability sum '{}' does not equal 1.0 for state '{}'"
+                .format(start_prob_sum, state))
+            traffic_model_valid = False
+
+    if 'transition_probability' in model_config:
+        for src_state in model_config['transition_probability']:
+            if src_state not in model_config['state_space']:
+                logging.warning("Traffic model config state space does not contain state '{}' which is used in the transition probability matrix"
+                    .format(src_state))
+                traffic_model_valid = False
+            trans_prob_sum = 0.0
+            for dst_state in model_config['transition_probability'][src_state]:
+                if dst_state not in model_config['state_space']:
+                    logging.warning("Traffic model config state space does not contain state '{}' which is used in the transition probability matrix"
+                        .format(dst_state))
+                    traffic_model_valid = False
+                trans_prob_sum += float(model_config['transition_probability'][src_state][dst_state])
+
+            if 'End' not in src_state and not float_value_is_close(trans_prob_sum, 1.0):
+                logging.warning("Traffic model config transition probability sum '{}' does not equal 1.0 for src state '{}'"
+                    .format(trans_prob_sum, src_state))
+                traffic_model_valid = False
+
+    if 'emission_probability' in model_config:
+        for state in model_config['emission_probability']:
+            if state not in model_config['state_space']:
+                logging.warning("Traffic model config state space does not contain state '{}' which is used in the emission probability matrix"
+                    .format(state))
+                traffic_model_valid = False
+            emit_prob_sum = 0.0
+            for obs in model_config['emission_probability'][state]:
+                if obs not in model_config['observation_space']:
+                    logging.warning("Traffic model config observation space does not contain state '{}' which is used in the emission probability matrix"
+                        .format(obs))
+                    traffic_model_valid = False
+                if len(model_config['emission_probability'][state][obs]) != 3:
+                    logging.warning("Traffic model config emission probability for state '{}' and observation '{}' does not contain required 3 params (dp, mu, sigam)"
+                        .format(state, obs))
+                    traffic_model_valid = False
+                else:
+                    emit_prob_sum += float(model_config['emission_probability'][state][obs][0])
+            if not float_value_is_close(emit_prob_sum, 1.0):
+                logging.warning("Traffic model config emission probability sum '{}' does not equal 1.0 for state '{}'"
+                    .format(emit_prob_sum, state))
+                traffic_model_valid = False
+
     return traffic_model_valid
 
 class TrafficModel(object):
