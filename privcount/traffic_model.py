@@ -303,8 +303,9 @@ class TrafficModel(object):
         viterbi_result = viterbi_result.replace(';',',')
         path = loads(viterbi_result)
 
-        num_states = len(path)
-
+        # empty lists are possible, when there was in error in the Tor
+        # viterbi code, or when a stream ended with no data sent.
+        # if we have an empty list, the following loop will not execute.
         for i, packet in enumerate(path):
             if len(packet) < 3:
                 continue
