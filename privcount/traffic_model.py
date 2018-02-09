@@ -320,7 +320,7 @@ class TrafficModel(object):
             secure_counters.increment('ExitStreamTrafficModelEmissionCount',
                                       bin=SINGLE_BIN,
                                       inc=1)
-            label = 'ExitStreamTrafficModelEmissionCount_{}_{}'.format(state, dir_code)
+            label = 'ExitStreamTrafficModelEmissionCount_{}_{}'.format(state, direction)
             secure_counters.increment(label,
                                       bin=SINGLE_BIN,
                                       inc=1)
@@ -328,7 +328,7 @@ class TrafficModel(object):
             secure_counters.increment('ExitStreamTrafficModelLogDelayTime',
                                       bin=SINGLE_BIN,
                                       inc=ldelay)
-            label = 'ExitStreamTrafficModelLogDelayTime_{}_{}'.format(state, dir_code)
+            label = 'ExitStreamTrafficModelLogDelayTime_{}_{}'.format(state, direction)
             secure_counters.increment(label,
                                       bin=SINGLE_BIN,
                                       inc=ldelay)
@@ -336,7 +336,7 @@ class TrafficModel(object):
             secure_counters.increment('ExitStreamTrafficModelSquaredLogDelayTime',
                                       bin=SINGLE_BIN,
                                       inc=ldelay*ldelay)
-            label = 'ExitStreamTrafficModelSquaredLogDelayTime_{}_{}'.format(state, dir_code)
+            label = 'ExitStreamTrafficModelSquaredLogDelayTime_{}_{}'.format(state, direction)
             secure_counters.increment(label,
                                       bin=SINGLE_BIN,
                                       inc=ldelay*ldelay)
