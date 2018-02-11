@@ -2170,6 +2170,13 @@ class Aggregator(ReconnectingClientFactory):
                                min_len=1):
             return False
 
+        # we currently don't use the timestamp, but require it anyway
+        if not is_float_valid("EventTimestamp",
+                              fields, event_desc,
+                              is_mandatory=True,
+                              min_value=0.0):
+            return False
+
         # get the result string
         viterbi_result = get_string_value("ViterbiPath",
                                  fields, event_desc,

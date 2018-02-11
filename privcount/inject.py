@@ -267,6 +267,7 @@ class PrivCountDataInjector(ServerFactory):
         #  - 'PRIVCOUNT_CONNECTION_CLOSE'
         #  - 'PRIVCOUNT_HSDIR_CACHE_STORE'
         #  - 'PRIVCOUNT_HSDIR_CACHE_FETCH'
+        #  - 'PRIVCOUNT_VITERBI'
         elif '=' in msg and len(parts) >= 2:
             items = parts[1:]
             fields = parse_tagged_event(items)
@@ -282,9 +283,9 @@ class PrivCountDataInjector(ServerFactory):
                                     fields, event_desc,
                                     is_mandatory=False)
 
-                # PRIVCOUNT_CIRCUIT_CELL, PRIVCOUNT_HSDIR_CACHE_STORE, and
-                # PRIVCOUNT_HSDIR_CACHE_FETCH have a single event time: the
-                # "end" time
+                # PRIVCOUNT_CIRCUIT_CELL, PRIVCOUNT_HSDIR_CACHE_STORE,
+                # PRIVCOUNT_HSDIR_CACHE_FETCH, and PRIVCOUNT_VITERBI
+                #  have a single event time: the "end" time
                 # (CACHE_FETCH has CacheCreatedTime, which we don't update:
                 # it's not the start time, and it's not at the same resolution)
                 end_time = get_float_value(
@@ -328,6 +329,7 @@ class PrivCountDataInjector(ServerFactory):
         #  - 'PRIVCOUNT_CIRCUIT_CELL'
         #  - 'PRIVCOUNT_CIRCUIT_CLOSE'
         #  - 'PRIVCOUNT_HSDIR_CACHE_STORE'
+        #  - 'PRIVCOUNT_VITERBI'
         elif '=' in msg and len(parts) >= 2:
             items = parts[1:]
             fields = parse_tagged_event(items)

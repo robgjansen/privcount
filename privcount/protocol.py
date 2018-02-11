@@ -1143,9 +1143,11 @@ class TorControlProtocol(object):
     def __init__(self, factory):
         self.factory = factory
         # Events can be up to ~1kB, start warning at 2kB, reject at 20kB
+        # Traffic events can be over 100k packets, so we use the same value
+        # here as we do in the PrivCount protocol.
         # We really don't care about the server maximum, because we only use
         # the server for testing: in production, the server is tor
-        self.MAX_LENGTH = 2*10*1024
+        self.MAX_LENGTH = 200*1024*1024
         self.clear()
 
     def clear(self):
@@ -1718,10 +1720,6 @@ class TorControlClientProtocol(LineOnlyReceiver, TorControlProtocol):
             use_setconf = self.getConfiguredValue('get_use_setconf',
                                                   'use SETCONF',
                                                   default=True)
-            if self.traffic_model is not None:
-                # avoid ',', ' ', '=', '\n', and '\r'
-                tmodel_str = json.dumps(self.traffic_model, separators=(';', ':'))
-                self.sendLine("SET_TMODEL TRUE {}".format(tmodel_str))
             if use_setconf:
                 circuit_sample_rate = self.getConfiguredValue(
                                                   'get_circuit_sample_rate',
@@ -1747,6 +1745,11 @@ class TorControlClientProtocol(LineOnlyReceiver, TorControlProtocol):
                 self.sendLine("SETCONF EnablePrivCount=1")
             # Always check that EnablePrivCount is set, even if we just set it
             self.sendLine("GETCONF EnablePrivCount")
+            # if we have a traffic model, send it before enabling PRIVCOUNT_VITERBI
+            if self.traffic_model is not None:
+                # avoid ',', ' ', '=', '\n', and '\r'
+                tmodel_str = json.dumps(self.traffic_model, separators=(';', ':'))
+                self.sendLine("SET_TMODEL TRUE {}".format(tmodel_str))
             # SETEVENTS is fine, it only affects this control connection
             self.sendLine("SETEVENTS {}".format(" ".join(self.active_events)))
             self.state = 'processing'
@@ -1789,9 +1792,9 @@ class TorControlClientProtocol(LineOnlyReceiver, TorControlProtocol):
                 if max_cell_events_per_circuit >= 0:
                     self.sendLine("SETCONF PrivCountMaxCellEventsPerCircuit=-1")
                 self.sendLine("SETCONF __ReloadTorrcOnSIGHUP=1")
-            if self.traffic_model is not None:
-                # we had a tmode, so lets shut it off
-                self.sendLine("SET_TMODEL FALSE")
+            # make sure the tmodel is disabled. it's useful to always send this
+            # just in case the DC was restarted and left Tor with a valid model
+            self.sendLine("SET_TMODEL FALSE")
             # Don't check if EnablePrivCount is off: other instances might
             # want it to stay on
             self.active_events = None
@@ -2560,6 +2563,9 @@ class TorControlServerProtocol(LineOnlyReceiver, TorControlProtocol):
                     # Like GETINFO, our GETCONF does not accept multiple words
                     # and it doesn't bother to strip the =
                     self.sendLine('552 Unrecognized option: Unknown option "{}". Failing.'.format(parts[1]))
+            elif parts[0] == "SET_TMODEL":
+                # ignore the tmodel they sent
+                self.sendLine("250 OK")
             else:
                 self.sendLine('510 Unrecognized command "{}"'.format(parts[0]))
         else:

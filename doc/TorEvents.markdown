@@ -378,7 +378,7 @@ It has the following known issues:
   https://github.com/privcount/privcount/issues/196
 * PrivCount's additional RAM allocations may affect Tor's circuit limits
   https://github.com/privcount/privcount/issues/349
-  
+
 ### PRIVCOUNT_CONNECTION_CLOSE
 
 TODO: expand documentation
@@ -578,6 +578,35 @@ Optional in v3, Not Available in v2, Only in Cached Descriptors:
 Limitations:
 
 See PRIVCOUNT_HSDIR_CACHE_STORE.
+
+### PRIVCOUNT_VITERBI
+
+This event is emitted once per stream, when the stream closes.
+The following fields are sent included in the event:
+
+Mandatory:
+* EventTimestamp
+* ViterbiPath
+
+The viterbi path is a json-encoded list, where each item in the list
+represents a packet 'observation' on a stream. An example encoding
+looks something like this:
+
+  ViterbiPath=[["s1";"+";1000];["s0";"+";1000];["s0";"-";1000];["s1";"-";1000];["End";"F";1000]]
+
+  - The first item in the internal list is the state (s0, s1, and End)
+  - The second item is the direction code:
+    - The '+' means the packet went from the circuit origin and traveled
+      exitward.
+    - The '-' means the packet went from the destination to the exit and
+      traveled clientward.
+    - The 'F' means the last packet on the stream.
+  - The third item is the delay between the previous packet and this one.
+
+If there was an error in Tor or the stream transferred no exit data,
+then the event will be:
+
+  ViterbiPath=[]
 
 ## PrivCount Event Field Format
 
