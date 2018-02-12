@@ -1142,7 +1142,7 @@ class TorControlProtocol(object):
 
     def __init__(self, factory):
         self.factory = factory
-        # Events can be up to ~1kB, start warning at 2kB, reject at 20kB
+        # Events can be up to ~10MB, start warning at 20MB, reject at 200MB
         # Traffic events can be over 100k packets, so we use the same value
         # here as we do in the PrivCount protocol.
         # We really don't care about the server maximum, because we only use
