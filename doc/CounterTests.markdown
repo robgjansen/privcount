@@ -323,11 +323,16 @@ See the port variant notes under ExitInteractiveCircuitCount.
 
 ### Exit Traffic Model
 
+- ExitStreamTrafficModelStreamCount:
+
+There is one stream per event sent from Tor when the PRIVCOUNT_VITERBI
+event is enabled. This counter is incremented once for each such event.
+
 - ExitStreamTrafficModelEmissionCount
 
     '.Tally.ExitStreamTrafficModelEmissionCount.bins[0][2] == 1'
 
-There is one Emission for every 1500 bytes (or non-zero remainder)
+There is one Emission for every 1434 bytes (or non-zero remainder)
 transmitted. Inbound and Outbound emissions are calculated separately.
 Use the instructions under ExitStreamByteCount to change the byte count.
 
@@ -349,7 +354,7 @@ increase the [Squared]LogDelayTime.
     '.Tally.ExitStreamTrafficModelTransitionCount.bins[0][2] == 0'
 
 Transitions depend on the specific traffic model.
-In the default test model, you need at least 2 Emissions (1501 bytes) to
+In the default test model, you need at least 2 Emissions (1435 bytes) to
 have 1 Transition. See the instructions under ExitStreamByteCount for
 changing the byte count.
 
@@ -5842,4 +5847,3 @@ TODO: merge and integrate with existing counter tests
 - HSDirMultiHopClientFailureCircuitReasonCountList
 - HSDirClientFailureCircuitReasonCountList
 - EntryFailureCircuitReasonCountList
-- ExitStreamTrafficModelStreamCount

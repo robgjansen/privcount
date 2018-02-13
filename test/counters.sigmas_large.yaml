@@ -10628,5 +10628,3 @@ counters:
         sigma: 1.0e+12
     EntryFailureCircuitReasonCountList:
         sigma: 1.0e+12
-    ExitStreamTrafficModelStreamCount:
-        sigma: 1.0e+12

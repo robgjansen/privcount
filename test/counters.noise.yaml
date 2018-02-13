@@ -16042,6 +16042,3 @@ counters:
     EntryFailureCircuitReasonCountList:
         estimated_value: 0.0
         sensitivity: 0.0
-    ExitStreamTrafficModelStreamCount:
-        estimated_value: 0.0
-        sensitivity: 0.0
