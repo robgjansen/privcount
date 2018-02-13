@@ -321,7 +321,7 @@ class TrafficModel(object):
             # delay of 0 indicates the packets were observed at the same time
             # log(x=0) is undefined, and log(x<1) is negative
             # we don't want to count negatives, so override delay if needed
-            ldelay = 0 if delay < 1 else int(math.log(delay))
+            ldelay = 0 if delay < 1 else int(round(math.log(delay)))
 
             secure_counters.increment('ExitStreamTrafficModelEmissionCount',
                                       bin=SINGLE_BIN,
