@@ -2172,8 +2172,18 @@ class CollectionPhase(object):
                 result_info['UpdatedTrafficModel'] = self.get_updated_traffic_model(tallied_counts)
 
                 # also write out a copy of the new model
-                self.write_json_file(result_info['UpdatedTrafficModel'],
+                new_model_path = self.write_json_file(result_info['UpdatedTrafficModel'],
                                      path_prefix, "privcount.traffic.model", begin, end)
+
+                # link to the latest version of the traffic model
+                # this is useful in the case that we want to keep iterating
+                # on the latest model but don't want to manually update the
+                # config every round.
+                tmplinkname = ".privcount.traffic.model.json.tmp"
+                linkname = "privcount.traffic.model.json.latest"
+                os.symlink(new_model_path, tmplinkname)
+                os.rename(tmplinkname, linkname)
+                os.remove(tmplinkname)
 
         # add the context of the outcome as another item
         result_info['Context'] = self.get_result_context(end_time)
