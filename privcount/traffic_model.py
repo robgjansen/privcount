@@ -179,7 +179,8 @@ class TrafficModel(object):
         that is used to specify noise for this model. Static counter labels are not
         dependent on the model input.
         '''
-        static_labels = ['ExitStreamTrafficModelEmissionCount',
+        static_labels = ['ExitStreamTrafficModelStreamCount',
+                         'ExitStreamTrafficModelEmissionCount',
                          'ExitStreamTrafficModelTransitionCount',
                          'ExitStreamTrafficModelLogDelayTime',
                          'ExitStreamTrafficModelSquaredLogDelayTime']
@@ -302,6 +303,11 @@ class TrafficModel(object):
         # python lets you encode with non-default separators, but not decode
         viterbi_result = viterbi_result.replace(';',',')
         path = loads(viterbi_result)
+
+        # the fact that we got an event means that we observed a stream
+        secure_counters.increment('ExitStreamTrafficModelStreamCount',
+                                  bin=SINGLE_BIN,
+                                  inc=1)
 
         # empty lists are possible, when there was in error in the Tor
         # viterbi code, or when a stream ended with no data sent.

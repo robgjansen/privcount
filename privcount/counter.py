@@ -291,6 +291,7 @@ PRIVCOUNT_COUNTER_EVENTS = {
 
 # these counters are for the traffic model code
 # model-specific counters are added in register_dynamic_counter
+'ExitStreamTrafficModelStreamCount' : { VITERBI_EVENT },
 'ExitStreamTrafficModelEmissionCount' : { VITERBI_EVENT },
 'ExitStreamTrafficModelTransitionCount' : { VITERBI_EVENT },
 'ExitStreamTrafficModelLogDelayTime' : { VITERBI_EVENT },

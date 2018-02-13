@@ -22256,3 +22256,6 @@ counters:
         bins:
         - [0, 1]
         - [1, .inf]
+    ExitStreamTrafficModelStreamCount:
+        bins:
+        - [-.inf, .inf]

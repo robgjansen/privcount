@@ -40,6 +40,7 @@ num_packet_logdelay_per_day = logdelay_per_packet * num_packets_per_day
 num_packet_logdelaysquared_per_day = logdelay_per_packet * logdelay_per_packet * num_packets_per_day
 
 # parameters that will be re-used
+stream_single_parameters = (sensitivity_streams, num_streams_per_day * epoch_length_days)
 stream_histogram_parameters = (2 * sensitivity_streams, num_streams_per_day * epoch_length_days)
 packet_single_parameters = (sensitivity_packets, num_packets_per_day * epoch_length_days)
 packet_histogram_parameters = (2 * sensitivity_packets, num_packets_per_day * epoch_length_days)
@@ -50,6 +51,7 @@ packet_logdelaysquared_histogram_parameters = (2 * sensitivity_packet_logdelaysq
 
 traffic_model_parameters = {
     # "single counter" type of statistics
+    'ExitStreamTrafficModelStreamCount': stream_single_parameters,
     'ExitStreamTrafficModelEmissionCount': packet_single_parameters,
     'ExitStreamTrafficModelLogDelayTime': packet_logdelay_single_parameters,
     'ExitStreamTrafficModelSquaredLogDelayTime': packet_logdelaysquared_single_parameters,

@@ -5,6 +5,9 @@
 # test/test_counter_match.sh
 
 counters:
+  ExitStreamTrafficModelStreamCount:
+    estimated_value: 0.0
+    sensitivity: 0.0
   ExitStreamTrafficModelEmissionCount:
     estimated_value: 0.0
     sensitivity: 0.0

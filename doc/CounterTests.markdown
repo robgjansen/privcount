@@ -5842,3 +5842,4 @@ TODO: merge and integrate with existing counter tests
 - HSDirMultiHopClientFailureCircuitReasonCountList
 - HSDirClientFailureCircuitReasonCountList
 - EntryFailureCircuitReasonCountList
+- ExitStreamTrafficModelStreamCount
