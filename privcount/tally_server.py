@@ -2078,9 +2078,9 @@ class CollectionPhase(object):
 
         # the traffic model class expects counts only, i.e, dict[label] = count
         tmodel_counts = {}
-        for label in all_tmodel_labels:
-            if label not in tallied_counts:
-                logging.warning("tallied counters are missing traffic model label {}"
+        for label in tallied_counts:
+            if label not in all_tmodel_labels:
+                logging.warning("tallied counter label {} is not a valid traffic model label"
                                 .format(label))
             elif 'bins' not in tallied_counts[label]:
                 logging.warning("tallied counters are missing bins for traffic model label {}"
@@ -2096,7 +2096,7 @@ class CollectionPhase(object):
                 tmodel_counts[label] = tallied_counts[label]['bins'][0][2]
 
         # now make sure we got counts for all of the labels
-        if len(tmodel_counts) == len(all_tmodel_labels):
+        if len(tmodel_counts) == len(tallied_counts):
             # update the original tmodel based on our new counts, and output. it's
             # OK if this fails, because the counts will be stored in the results
             # context and can be used to update the model after the round ends
