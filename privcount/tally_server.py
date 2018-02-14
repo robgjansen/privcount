@@ -2079,10 +2079,7 @@ class CollectionPhase(object):
         # the traffic model class expects counts only, i.e, dict[label] = count
         tmodel_counts = {}
         for label in tallied_counts:
-            if label not in all_tmodel_labels:
-                logging.warning("tallied counter label {} is not a valid traffic model label"
-                                .format(label))
-            elif 'bins' not in tallied_counts[label]:
+            if 'bins' not in tallied_counts[label]:
                 logging.warning("tallied counters are missing bins for traffic model label {}"
                                 .format(label))
             elif len(tallied_counts[label]['bins']) < 1:
