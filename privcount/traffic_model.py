@@ -23,6 +23,9 @@ def check_traffic_model_config(model_config):
     for each outgoing state must sum to 1. This function returns True if the given
     model_config is valid, and False otherwise.
     '''
+    if model_config == None:
+        return False
+
     traffic_model_valid = True
 
     for k in ['state_space', 'observation_space', 'emission_probability', 'transition_probability', 'start_probability']:

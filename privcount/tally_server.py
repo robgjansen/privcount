@@ -2074,7 +2074,6 @@ class CollectionPhase(object):
 
         # create a TrafficModel object from the original input model config
         tmodel = TrafficModel(self.traffic_model_config)
-        all_tmodel_labels = tmodel.get_all_counter_labels()
 
         # the traffic model class expects counts only, i.e, dict[label] = count
         tmodel_counts = {}
