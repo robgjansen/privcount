@@ -669,7 +669,7 @@ class TallyServer(ServerFactory, PrivCountServer):
                 # get the bins and noise that we should use for this model
                 tmodel_bins = tmodel.get_bins_init_config(traffic_noise_conf)
 
-                if if 'traffic_noise' in ts_conf:
+                if 'traffic_noise' in ts_conf:
                     tmodel_noise = tmodel.get_noise_init_config(traffic_noise_conf)
 
                     # sanity check
