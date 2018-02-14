@@ -2167,6 +2167,8 @@ class CollectionPhase(object):
             result_info['Tally'] = tallied_counts
 
             if self.traffic_model_config is not None:
+                logging.info("Computing updated traffic model based on previous round tallies.")
+
                 # compute the updated traffic model and store in results context
                 result_info['UpdatedTrafficModel'] = self.get_updated_traffic_model(tallied_counts)
 
@@ -2174,18 +2176,25 @@ class CollectionPhase(object):
                 new_model_path = self.write_json_file(result_info['UpdatedTrafficModel'],
                                      path_prefix, "privcount.traffic.model", begin, end)
 
-                # link to the latest version of the traffic model
-                # this is useful in the case that we want to keep iterating
-                # on the latest model but don't want to manually update the
-                # config every round.
-                tmplinkname = ".privcount.traffic.model.json.tmp"
-                linkname = "traffic.model.latest.json"
+                logging.info("Updated traffic model written to file at path '{}'".format(new_model_path))
 
-                if os.path.exists(tmplinkname):
-                    os.remove(tmplinkname)
+                is_valid = check_traffic_model_config(result_info['UpdatedTrafficModel'])
+                if is_valid:
+                    # link to the latest version of the traffic model
+                    # this is useful in the case that we want to keep iterating
+                    # on the latest model but don't want to manually update the
+                    # config every round.
+                    tmplinkname = ".privcount.traffic.model.json.tmp"
+                    linkname = "traffic.model.latest.json"
 
-                os.symlink(new_model_path, tmplinkname)
-                os.rename(tmplinkname, linkname)
+                    if os.path.exists(tmplinkname):
+                        os.remove(tmplinkname)
+
+                    os.symlink(new_model_path, tmplinkname)
+                    os.rename(tmplinkname, linkname)
+                else:
+                    logging.warning("Updated traffic model config is invalid and will be unusable in future measurement rounds")
+                    logging.warning("We did not update the 'traffic.model.latest.json' symlink to point to the latest model because it is invalid.")
 
         # add the context of the outcome as another item
         result_info['Context'] = self.get_result_context(end_time)
