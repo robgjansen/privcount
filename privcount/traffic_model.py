@@ -231,8 +231,8 @@ class TrafficModel(object):
             return False
 
         traffic_noise_valid = True
-        for key in self.get_all_template_labels():
-            if key not in templated_noise_config['counters']:
+        for key in templated_noise_config['counters']:
+            if key not in self.get_all_template_labels():
                 traffic_noise_valid = False
         return traffic_noise_valid
 
@@ -247,21 +247,31 @@ class TrafficModel(object):
             return None
 
         noise_dict = {}
+
         label_map = self.get_all_counter_template_label_mapping()
         for counter_label in label_map:
             template_label = label_map[counter_label]
-            noise_dict[counter_label] = templated_noise_config['counters'][template_label]
+            # only count the label if it was in the config
+            if template_label in templated_noise_config['counters']:
+                noise_dict[counter_label] = templated_noise_config['counters'][template_label]
 
         return noise_dict
 
-    def get_bins_init_config(self):
+    def get_bins_init_config(self, templated_noise_config):
         '''
         Returns the initial bin values for all counters counted by this model.
+        If templated_noise_config is None, collect all counters. Otherwise,
+        collect those specified in templated_noise_config.
         '''
         bins_dict = {}
-        for counter_label in self.get_all_counter_labels():
-            # we count all single values, so bins should all represent a single count
-            bins_dict[counter_label] = {'bins': [[0.0, float("inf")]]}
+
+        label_map = self.get_all_counter_template_label_mapping()
+        for counter_label in label_map:
+            template_label = label_map[counter_label]
+            # only count the label if it was in the config
+            if template_label in templated_noise_config['counters']:
+                # traffic counters are all single bin counters
+                bins_dict[counter_label] = {'bins': [[0.0, float("inf")]]}
 
         return bins_dict
 

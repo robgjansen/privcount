@@ -648,6 +648,7 @@ class TallyServer(ServerFactory, PrivCountServer):
 
                 # we also need noise parameters for all of the traffic model counters
                 # make sure the noise file exists
+                traffic_noise_conf = None
                 if 'traffic_noise' in ts_conf:
                     ts_conf['traffic_noise'] = normalise_path(ts_conf['traffic_noise'])
                     assert os.path.exists(ts_conf['traffic_noise'])
@@ -666,8 +667,9 @@ class TallyServer(ServerFactory, PrivCountServer):
                 tmodel.register_counters()
 
                 # get the bins and noise that we should use for this model
-                tmodel_bins = tmodel.get_bins_init_config()
-                if 'traffic_noise' in ts_conf:
+                tmodel_bins = tmodel.get_bins_init_config(traffic_noise_conf)
+
+                if if 'traffic_noise' in ts_conf:
                     tmodel_noise = tmodel.get_noise_init_config(traffic_noise_conf)
 
                     # sanity check
@@ -2180,10 +2182,13 @@ class CollectionPhase(object):
                 # on the latest model but don't want to manually update the
                 # config every round.
                 tmplinkname = ".privcount.traffic.model.json.tmp"
-                linkname = "privcount.traffic.model.json.latest"
+                linkname = "traffic.model.latest.json"
+
+                if os.path.exists(tmplinkname):
+                    os.remove(tmplinkname)
+
                 os.symlink(new_model_path, tmplinkname)
                 os.rename(tmplinkname, linkname)
-                os.remove(tmplinkname)
 
         # add the context of the outcome as another item
         result_info['Context'] = self.get_result_context(end_time)
