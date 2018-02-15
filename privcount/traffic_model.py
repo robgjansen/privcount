@@ -377,6 +377,192 @@ class TrafficModel(object):
                                           bin=SINGLE_BIN,
                                           inc=1)
 
+    def __normalize_start_tallies(self, tallies):
+        '''
+        Converts the given tally counts to valid probabilities by normalizing the counts.
+        Returns start probability dictionary whose probability sum is guaranteed to sum to
+        1.0 (i.e., 100%), or 0.0 if the we counted no positive start counts.
+        '''
+
+        # handle start probabilities.
+        s_count = {}
+
+        # first we go through and convert tallies to valid non-negative values
+        for state in self.start_p:
+            label = "ExitStreamTrafficModelTransitionCount_START_{}".format(state)
+            count = tallies[label] if label in tallies and tallies[label] > 0.0 else 0.0
+            s_count[state] = float(count)
+
+        # normalize counts to ensure the probabilities sum to 100%,
+        # or set to 0 if we had absolutely no positive counts.
+        s_total = float(sum(s_count.values()))
+        for state in s_count:
+            if s_total > 0.0:
+                s_count[state] = s_count[state]/s_total
+            else:
+                s_count[state] = 0.0
+
+        return s_count
+
+    def __update_start_probabilities(self, s_tally_prob, inertia):
+        '''
+        Update the start probabilities based on the normalized probabilities from the
+        tally count results.
+        Updates self.start_p in place and also returns a reference to it.
+        '''
+
+        # apply inertia
+        for state in self.start_p:
+            new_prob = inertia * self.start_p[state] + (1.0-inertia) * s_tally_prob[state]
+            self.start_p[state] = new_prob
+
+        # be extra sure our new probs sum to 1.0
+        s_total = float(sum(self.start_p.values()))
+        if s_total > 0.0:
+            for state in self.start_p:
+                self.start_p[state] = self.start_p[state]/s_total
+        else:
+            logging.warning("BUG: we have no positive start probabilities in updated model.")
+
+        return self.start_p
+
+    def __normalize_transition_tallies(self, tallies):
+        '''
+        Converts the given tally counts to valid probabilities by normalizing the counts.
+        Returns transition probability dictionary whose probability sums are guaranteed to sum to
+        1.0 (i.e., 100%), or 0.0 if the we counted no positive start counts.
+        '''
+
+        # handle transition probabilities.
+        t_count = {}
+
+        for src_state in self.trans_p:
+            # first we go through and convert tallies to valid non-negative values
+            t_count[src_state] = {}
+            for dst_state in self.trans_p[src_state]:
+                label = "ExitStreamTrafficModelTransitionCount_{}_{}".format(src_state, dst_state)
+                count = tallies[label] if label in tallies and tallies[label] > 0.0 else 0.0
+                t_count[src_state][dst_state] = float(count)
+
+            # normalize counts to ensure the probabilities sum to 100%,
+            # or set to 0 if we had absolutely no positive counts.
+            t_total = float(sum(t_count[src_state].values()))
+            for dst_state in t_count[src_state]:
+                if t_total > 0.0:
+                    t_count[src_state][dst_state] = t_count[src_state][dst_state]/t_total
+                else:
+                    t_count[src_state][dst_state] = 0.0
+
+        return t_count
+
+    def __update_transition_probabilities(self, t_tally_prob, inertia):
+        '''
+        Update the transition probabilities based on the normalized probabilities from the
+        tally count results.
+        Updates self.trans_p in place and also returns a reference to it.
+        '''
+
+        for src_state in self.trans_p:
+            # apply inertia
+            for dst_state in self.trans_p[src_state]:
+                new_prob = inertia * self.trans_p[src_state][dst_state] + (1.0-inertia) * t_tally_prob[src_state][dst_state]
+                self.trans_p[src_state][dst_state] = new_prob
+
+            # be extra sure our new probs sum to 1.0
+            t_total = float(sum(self.trans_p[src_state].values()))
+            if t_total > 0.0:
+                for dst_state in self.trans_p[src_state]:
+                    self.trans_p[src_state][dst_state] = self.trans_p[src_state][dst_state]/t_total
+            else:
+                if 'End' in src_state:
+                    logging.info("No positive transition probabilities for end state {}. This is OK."
+                        .format(src_state))
+                else:
+                    logging.warning("BUG: we have no positive transition probabilities in updated model for state {}."
+                        .format(src_state))
+
+        return self.trans_p
+
+    def __normalize_emission_tallies(self, tallies):
+        '''
+        Converts the given tally counts to valid probabilities by normalizing the counts.
+        Returns emission probability dictionary whose probability sums are guaranteed to sum to
+        1.0 (i.e., 100%), or 0.0 if the we counted no positive start counts.
+        '''
+
+        e_count, e_mu, e_sigma = {}, {}, {}
+        for state in self.emit_p:
+            # first we go through and convert tallies to valid non-negative values
+            e_count[state], e_mu[state], e_sigma[state] = {}, {}, {}
+            for direction in self.emit_p[state]:
+                sd_label = "ExitStreamTrafficModelEmissionCount_{}_{}".format(state, direction)
+                if sd_label in tallies and tallies[sd_label] > 0.0:
+                    e_count[state][direction] = float(tallies[sd_label])
+                else:
+                    e_count[state][direction] = 0.0
+
+                mu_label = "ExitStreamTrafficModelLogDelayTime_{}_{}".format(state, direction)
+                if mu_label in tallies and tallies[mu_label] > 0.0 and e_count[state][direction] > 0.0:
+                    e_mu[state][direction] = float(tallies[mu_label])/float(e_count[state][direction])
+                else:
+                    e_mu[state][direction] = 0.0
+
+                ss_label = "ExitStreamTrafficModelSquaredLogDelayTime_{}_{}".format(state, direction)
+                if ss_label in tallies and tallies[ss_label] > 0.0 and sd_label in tallies and tallies[sd_label] > 0.0:
+                    obs_var = float(tallies[ss_label])/float(tallies[sd_label])
+                    obs_var -= e_mu[state][direction]**2
+                else:
+                    obs_var = 0.0
+
+                # rounding errors or noise can make a small positive variance look negative
+                # setting a small "sane default" for this case
+                if obs_var < math.sqrt(0.01):
+                    e_sigma[state][direction] = 0.01
+                else: # No rounding errors, do the math
+                    e_sigma[state][direction] = math.sqrt(obs_var)
+
+            # normalize counts to ensure the probabilities sum to 100%,
+            # or set to 0 if we had absolutely no positive counts.
+            e_total = float(sum(e_count[state].values()))
+            for direction in e_count[state]:
+                if e_total > 0.0:
+                    e_count[state][direction] = e_count[state][direction]/e_total
+                else:
+                    e_count[state][direction] = 0.0
+
+        return e_count, e_mu, e_sigma
+
+    def __update_emission_probabilities(self, e_count, e_mu, e_sigma, inertia):
+        '''
+        Update the emission probabilities based on the normalized probabilities from the
+        tally count results.
+        Updates self.emit_p in place and also returns a reference to it.
+        '''
+
+        for state in self.emit_p:
+            # apply inertia
+            for direction in self.emit_p[state]:
+                (dp, mu, sigma) = self.emit_p[state][direction]
+
+                dp_new = inertia * dp + (1.0-inertia) * e_count[state][direction]
+                mu_new = inertia * mu + (1.0-inertia) * e_mu[state][direction]
+                sigma_new = inertia * sigma + (1.0-inertia) * e_sigma[state][direction]
+
+                self.emit_p[state][direction] = (dp_new, mu_new, sigma_new)
+
+            # be extra sure our new probs sum to 1.0
+            e_total = float(sum([v[0] for v in self.emit_p[state].values()]))
+            if e_total > 0.0:
+                for direction in self.emit_p[state]:
+                    (dp, mu, sigma) = self.emit_p[state][direction]
+                    dp_new = dp/e_total
+                    self.emit_p[state][direction] = (dp_new, mu, sigma)
+            else:
+                logging.warning("BUG: we have no positive emission probabilities in updated model for state {}."
+                    .format(state))
+
+        return self.emit_p
+
     def update_from_tallies(self, tallies, trans_inertia=0.1, emit_inertia=0.1):
         '''
         Given the (noisy) aggregated tallied counter values for this model, compute the updated model:
@@ -386,88 +572,18 @@ class TrafficModel(object):
           mu' <- emit_inertia * mu + (1-emit_inertia)*(log-delay sum / state_direction count)
           sigma' <- emit_inertia * sigma + (1-emit_inertia)*sqrt(avg. of squares - square of average)
         '''
-        count, trans_count, obs_trans_p = {}, {}, {}
-        for src_state in self.trans_p:
-            count[src_state] = 0
-            trans_count[src_state] = {}
-            for dst_state in self.trans_p[src_state]:
-                trans_count[src_state][dst_state] = 0
-                src_dst_label = "ExitStreamTrafficModelTransitionCount_{}_{}".format(src_state, dst_state)
-                if src_dst_label in tallies:
-                    val = tallies[src_dst_label]
-                    trans_count[src_state][dst_state] = val
-                    count[src_state] += val
 
-            obs_trans_p[src_state] = {}
-            for dst_state in self.trans_p[src_state]:
-                if count[src_state] > 0:
-                    obs_trans_p[src_state][dst_state] = float(trans_count[src_state][dst_state])/float(count[src_state])
-                else:
-                    obs_trans_p[src_state][dst_state] = 0.0
+        # handle start probabilities
+        s_tally_prob = self.__normalize_start_tallies(tallies)
+        self.start_p = self.__update_start_probabilities(s_tally_prob, trans_inertia)
 
-        obs_dir_emit_count, obs_mu, obs_sigma = {}, {}, {}
-        for state in self.emit_p:
-            obs_dir_emit_count[state], obs_mu[state], obs_sigma[state] = {}, {}, {}
-            for direction in self.emit_p[state]:
-                sd_label = "ExitStreamTrafficModelEmissionCount_{}_{}".format(state, direction)
-                if sd_label in tallies:
-                    obs_dir_emit_count[state][direction] = tallies[sd_label]
-                else:
-                    obs_dir_emit_count[state][direction] = 0
+        # handle transition probabilities
+        t_tally_prob = self.__normalize_transition_tallies(tallies)
+        self.trans_p = self.__update_transition_probabilities(t_tally_prob, trans_inertia)
 
-                mu_label = "ExitStreamTrafficModelLogDelayTime_{}_{}".format(state, direction)
-                if mu_label in tallies and obs_dir_emit_count[state][direction] > 0:
-                    obs_mu[state][direction] = float(tallies[mu_label])/float(obs_dir_emit_count[state][direction])
-                else:
-                    obs_mu[state][direction] = 0.0
-
-                ss_label = "ExitStreamTrafficModelSquaredLogDelayTime_{}_{}".format(state, direction)
-                if ss_label in tallies and sd_label in tallies and tallies[sd_label] > 0:
-                    obs_var = float(tallies[ss_label])/float(tallies[sd_label])
-                    obs_var -= obs_mu[state][direction]**2
-                else:
-                    obs_var = 0.0
-
-                # rounding errors or noise can make a small positive variance look negative
-                # setting a small "sane default" for this case
-                if obs_var < math.sqrt(0.01):
-                    obs_sigma[state][direction] = 0.01
-                else: # No rounding errors, do the math
-                    obs_sigma[state][direction] = math.sqrt(obs_var)
-
-        for src_state in self.trans_p:
-            for dst_state in self.trans_p[src_state]:
-                self.trans_p[src_state][dst_state] = trans_inertia * self.trans_p[src_state][dst_state] + (1-trans_inertia) * obs_trans_p[src_state][dst_state]
-
-            state = src_state
-            for direction in self.emit_p[state]:
-                (dp, mu, sigma) = self.emit_p[state][direction]
-
-                if state in count and count[state] > 0:
-                    dp_new = emit_inertia * dp + (1-emit_inertia)*float(obs_dir_emit_count[state][direction])/float(count[state])
-                else:
-                    dp_new = emit_inertia * dp
-                mu_new = emit_inertia * mu + (1-emit_inertia)*obs_mu[state][direction]
-                sigma_new = emit_inertia * sigma + (1-emit_inertia)*obs_sigma[state][direction]
-
-                self.emit_p[state][direction] = (dp_new, mu_new, sigma_new)
-
-        # handle start probabilities.
-        s_label, s_count = {}, {}
-        start_total = 0
-        for state in self.start_p:
-            if self.start_p[state] > 0.0:
-                s_label = "ExitStreamTrafficModelTransitionCount_START_{}".format(state)
-                if s_label in tallies:
-                    s_count[state] = tallies[s_label]
-                else:
-                    s_count[state] = 0
-                start_total += s_count[state]
-        for state in self.start_p:
-            if start_total > 0.0:
-                self.start_p[state] = trans_inertia * self.start_p[state] + (1-trans_inertia) * float(s_count[state])/float(start_total)
-            else:
-                self.start_p[state] = trans_inertia * self.start_p[state]
+        # handle emission probabilities
+        e_count, e_mu, e_sigma = self.__normalize_emission_tallies(tallies)
+        self.emit_p = self.__update_emission_probabilities(e_count, e_mu, e_sigma, emit_inertia)
 
         updated_model_config = {
             'state_space': self.state_s,
@@ -476,4 +592,5 @@ class TrafficModel(object):
             'transition_probability': self.trans_p,
             'emission_probability': self.emit_p
         }
+
         return updated_model_config
