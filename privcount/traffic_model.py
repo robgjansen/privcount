@@ -96,6 +96,36 @@ def check_traffic_model_config(model_config):
 
     return traffic_model_valid
 
+def normalize_traffic_model_config(model_config):
+    '''
+    Normalizes the given traffic model config so that all start,
+    emission, and transition probabilities sum to 1.0. Returns
+    the normalized config.
+    '''
+
+    if 'start_probability' in model_config:
+        start_prob_sum = sum(model_config['start_probability'].values())
+        for state in model_config['start_probability']:
+            model_config['start_probability'][state] /= start_prob_sum
+
+    if 'emission_probability' in model_config:
+        for state in model_config['emission_probability']:
+            emit_prob_sum = 0.0
+            for obs in model_config['emission_probability'][state]:
+                if len(model_config['emission_probability'][state][obs]) > 0:
+                    emit_prob_sum += float(model_config['emission_probability'][state][obs][0])
+            for obs in model_config['emission_probability'][state]:
+                if len(model_config['emission_probability'][state][obs]) > 0:
+                    model_config['emission_probability'][state][obs][0] /= emit_prob_sum
+
+    if 'transition_probability' in model_config:
+        for src in model_config['transition_probability']:
+            trans_prob_sum = sum(model_config['transition_probability'][src].values())
+            for dst in model_config['transition_probability'][src]:
+                model_config['transition_probability'][src][dst] /= trans_prob_sum
+
+    return model_config
+
 class TrafficModel(object):
     '''
     A class that represents a hidden markov model (HMM).
