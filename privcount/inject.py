@@ -204,6 +204,7 @@ class PrivCountDataInjector(ServerFactory):
                 logging.info("Event end time {} is outside {} to {}, skipping {}"
                              .format(this_time_end, self.prune_before,
                                      self.prune_after, msg))
+                self.last_time_end = this_time_end
                 continue
 
             self.output_line_count += 1
