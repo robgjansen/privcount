@@ -593,7 +593,7 @@ class TrafficModel(object):
 
         return self.emit_p
 
-    def update_from_tallies(self, tallies, trans_inertia=0.1, emit_inertia=0.1):
+    def update_from_tallies(self, tallies, trans_inertia=0.5, emit_inertia=0.5):
         '''
         Given the (noisy) aggregated tallied counter values for this model, compute the updated model:
         + Transition probabilities - trans_p[s][t] = inertia*trans_p[s][t] + (1-inertia)*(tally result)
