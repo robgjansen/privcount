@@ -360,6 +360,16 @@ changing the byte count.
 
 Transitions from the START state are not counted in this total.
 
+- ExitStreamTrafficModelDelayTime
+- ExitCircuitTrafficModelCircuitCount
+- ExitCircuitTrafficModelDelayTime
+- ExitCircuitTrafficModelEmissionCount
+- ExitCircuitTrafficModelLogDelayTime
+- ExitCircuitTrafficModelSquaredLogDelayTime
+- ExitCircuitTrafficModelTransitionCount
+
+TODO document
+
 #### Exit Traffic Model Template Counters
 
 - ExitStreamTrafficModelEmissionCount_<STATE>_<DIRECTION>

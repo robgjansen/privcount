@@ -14,6 +14,9 @@ counters:
   ExitStreamTrafficModelEmissionCount_<STATE>_<DIRECTION>:
     estimated_value: 0.0
     sensitivity: 0.0
+  ExitStreamTrafficModelDelayTime:
+    estimated_value: 0.0
+    sensitivity: 0.0
   ExitStreamTrafficModelLogDelayTime:
     estimated_value: 0.0
     sensitivity: 0.0
@@ -33,5 +36,38 @@ counters:
     estimated_value: 0.0
     sensitivity: 0.0
   ExitStreamTrafficModelTransitionCount_START_<STATE>:
+    estimated_value: 0.0
+    sensitivity: 0.0
+  ExitCircuitTrafficModelCircuitCount:
+    estimated_value: 0.0
+    sensitivity: 0.0
+  ExitCircuitTrafficModelDelayTime:
+    estimated_value: 0.0
+    sensitivity: 0.0
+  ExitCircuitTrafficModelDelayTime_<STATE>_<DIRECTION>:
+    estimated_value: 0.0
+    sensitivity: 0.0
+  ExitCircuitTrafficModelEmissionCount:
+    estimated_value: 0.0
+    sensitivity: 0.0
+  ExitCircuitTrafficModelEmissionCount_<STATE>_<DIRECTION>:
+    estimated_value: 0.0
+    sensitivity: 0.0
+  ExitCircuitTrafficModelLogDelayTime:
+    estimated_value: 0.0
+    sensitivity: 0.0
+  ExitCircuitTrafficModelLogDelayTime_<STATE>_<DIRECTION>:
+    estimated_value: 0.0
+    sensitivity: 0.0
+  ExitCircuitTrafficModelSquaredLogDelayTime:
+    estimated_value: 0.0
+    sensitivity: 0.0
+  ExitCircuitTrafficModelSquaredLogDelayTime_<STATE>_<DIRECTION>:
+    estimated_value: 0.0
+    sensitivity: 0.0
+  ExitCircuitTrafficModelTransitionCount:
+    estimated_value: 0.0
+    sensitivity: 0.0
+  ExitCircuitTrafficModelTransitionCount_<SRCSTATE>_<DSTSTATE>:
     estimated_value: 0.0
     sensitivity: 0.0

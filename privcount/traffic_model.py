@@ -494,6 +494,20 @@ class HiddenMarkovModel(object):
         Get a dict mapping the static counter labels for this model to the template label
         that is used to specify noise for this model. Static counter labels are not
         dependent on the model input.
+
+        ExitStreamTrafficModelDelayTime
+        ExitStreamTrafficModelEmissionCount
+        ExitStreamTrafficModelLogDelayTime
+        ExitStreamTrafficModelSquaredLogDelayTime
+        ExitStreamTrafficModelStreamCount
+        ExitStreamTrafficModelTransitionCount
+
+        ExitCircuitTrafficModelDelayTime
+        ExitCircuitTrafficModelEmissionCount
+        ExitCircuitTrafficModelLogDelayTime
+        ExitCircuitTrafficModelSquaredLogDelayTime
+        ExitCircuitTrafficModelStreamCount
+        ExitCircuitTrafficModelTransitionCount
         '''
         static_labels = ['{}StreamCount'.format(self.prefix),
                          '{}EmissionCount'.format(self.prefix),

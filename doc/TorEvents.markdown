@@ -579,20 +579,20 @@ Limitations:
 
 See PRIVCOUNT_HSDIR_CACHE_STORE.
 
-### PRIVCOUNT_VITERBI
+### PRIVCOUNT_VITERBI_PACKETS
 
 This event is emitted once per stream, when the stream closes.
 The following fields are sent included in the event:
 
 Mandatory:
 * EventTimestamp
-* ViterbiPath
+* ViterbiPathPackets
 
 The viterbi path is a json-encoded list, where each item in the list
 represents a packet 'observation' on a stream. An example encoding
 looks something like this:
 
-  ViterbiPath=[["s1";"+";1000];["s0";"+";1000];["s0";"-";1000];["s1";"-";1000];["End";"F";1000]]
+  ViterbiPathPackets=[["s1";"+";1000];["s0";"+";1000];["s0";"-";1000];["s1";"-";1000];["End";"F";1000]]
 
   - The first item in the internal list is the state (s0, s1, and End)
   - The second item is the direction code:
@@ -606,7 +606,24 @@ looks something like this:
 If there was an error in Tor or the stream transferred no exit data,
 then the event will be:
 
-  ViterbiPath=[]
+  ViterbiPathPackets=[]
+
+### PRIVCOUNT_VITERBI_STREAMS
+
+This event is emitted once per stream, when the stream closes.
+The following fields are sent included in the event:
+
+Mandatory:
+* EventTimestamp
+* ViterbiPathStreams
+
+The viterbi path is a json-encoded list, where each item in the list
+represents a stream 'observation' on a circuit. An example encoding
+looks something like this:
+
+  # TODO document valid ViterbiPathStreams item
+
+  ViterbiPathStreams=[]
 
 ## PrivCount Event Field Format
 

@@ -1141,7 +1141,8 @@ class Aggregator(ReconnectingClientFactory):
             event_code == 'PRIVCOUNT_CONNECTION_CLOSE' or
             event_code == 'PRIVCOUNT_HSDIR_CACHE_STORE' or
             event_code == 'PRIVCOUNT_HSDIR_CACHE_FETCH' or
-            event_code == 'PRIVCOUNT_VITERBI'):
+            event_code == 'PRIVCOUNT_VITERBI_PACKETS' or
+            event_code == 'PRIVCOUNT_VITERBI_STREAMS'):
             fields = parse_tagged_event(items)
         else:
             logging.warning("Unexpected {} event when parsing: '{}'"
