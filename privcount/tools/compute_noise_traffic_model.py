@@ -59,9 +59,9 @@ traffic_model_parameters = {
 
     # "histogram" type of statistics
     # each '<>' is expanded to include all counters for the states defined in a particular model
-    'ExitStreamTrafficModelEmissionCount_<STATE>_<DIRECTION>': packet_histogram_parameters,
-    'ExitStreamTrafficModelLogDelayTime_<STATE>_<DIRECTION>': packet_logdelay_histogram_parameters,
-    'ExitStreamTrafficModelSquaredLogDelayTime_<STATE>_<DIRECTION>': packet_logdelaysquared_histogram_parameters,
+    'ExitStreamTrafficModelEmissionCount_<STATE>_<OBS>': packet_histogram_parameters,
+    'ExitStreamTrafficModelLogDelayTime_<STATE>_<OBS>': packet_logdelay_histogram_parameters,
+    'ExitStreamTrafficModelSquaredLogDelayTime_<STATE>_<OBS>': packet_logdelaysquared_histogram_parameters,
     # only counted on stream's first packet, so use stream params
     'ExitStreamTrafficModelTransitionCount_START_<STATE>': stream_histogram_parameters,
     # counted on all but the last packet on each stream

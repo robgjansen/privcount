@@ -10,97 +10,184 @@ import logging
 
 from json import loads
 
-from privcount.counter import register_dynamic_counter, VITERBI_EVENT, SecureCounters
+from privcount.counter import register_dynamic_counter, VITERBI_PACKETS_EVENT, VITERBI_STREAMS_EVENT, SecureCounters
 SINGLE_BIN = SecureCounters.SINGLE_BIN
 
 def float_value_is_close(a, b, rel_tol=1e-09, abs_tol=0.0):
     return abs(a-b) <= max(rel_tol * max(abs(a), abs(b)), abs_tol)
 
 def check_traffic_model_config(model_config):
+    if model_config == None:
+        logging.warning("Can't validate missing traffic model config")
+        return False
+
+    traffic_model_valid = True
+
+    # we may have only one of stream model or packet model
+    if 'packet_model' not in model_config and 'stream_model' not in model_config:
+        logging.warning("Traffic model config does not contain key 'packet_model' or 'stream_model'")
+        traffic_model_valid = False
+
+    if 'packet_model' not in model_config:
+        packet_model = model_config['packet_model']
+        if not __check_packet_model_config(packet_model):
+            traffic_model_valid = False
+
+    if 'stream_model' not in model_config:
+        stream_model = model_config['stream_model']
+        if not __check_stream_model_config(stream_model):
+            traffic_model_valid = False
+
+    return traffic_model_valid
+
+def __check_model_common_keys(model_config, model_type_str):
+    for k in ['state_space', 'observation_space', 'emission_probability', 'transition_probability', 'start_probability']:
+        if k not in model_config:
+            logging.warning("{} model config does not contain required key '{}'".format(model_type_str, k))
+            return False
+    return True
+
+def __check_model_common_start(model_config, model_type_str):
+    valid = True
+    if 'start_probability' in model_config:
+        start_prob_sum = 0.0
+        for state in model_config['start_probability']:
+            if state not in model_config['state_space']:
+                logging.warning("{} model config state space does not contain state '{}' which is used in the start probability array"
+                    .format(model_type_str, state))
+                valid = False
+            start_prob_sum += float(model_config['start_probability'][state])
+        if not float_value_is_close(start_prob_sum, 1.0):
+            logging.warning("{} model config start probability sum '{}' does not equal 1.0 for state '{}'"
+                .format(model_type_str, start_prob_sum, state))
+            valid = False
+    return valid
+
+def __check_model_common_transition(model_config, model_type_str):
+    valid = True
+    if 'transition_probability' in model_config:
+        for src_state in model_config['transition_probability']:
+            if src_state not in model_config['state_space']:
+                logging.warning("{} model config state space does not contain state '{}' which is used in the transition probability matrix"
+                    .format(model_type_str, src_state))
+                valid = False
+            trans_prob_sum = 0.0
+            for dst_state in model_config['transition_probability'][src_state]:
+                if dst_state not in model_config['state_space']:
+                    logging.warning("{} model config state space does not contain state '{}' which is used in the transition probability matrix"
+                        .format(model_type_str, dst_state))
+                    valid = False
+                trans_prob_sum += float(model_config['transition_probability'][src_state][dst_state])
+
+            if 'End' not in src_state and not float_value_is_close(trans_prob_sum, 1.0):
+                logging.warning("{} model config transition probability sum '{}' does not equal 1.0 for src state '{}'"
+                    .format(model_type_str, trans_prob_sum, src_state))
+                valid = False
+    return valid
+
+def __check_model_common_emission(model_config, model_type_str):
+    valid = True
+    if 'emission_probability' in model_config:
+        for state in model_config['emission_probability']:
+            if state not in model_config['state_space']:
+                logging.warning("{} model config state space does not contain state '{}' which is used in the emission probability matrix"
+                    .format(model_type_str, state))
+                valid = False
+            emit_prob_sum = 0.0
+            for obs in model_config['emission_probability'][state]:
+                if obs not in model_config['observation_space']:
+                    logging.warning("{} model config observation space does not contain state '{}' which is used in the emission probability matrix"
+                        .format(model_type_str, obs))
+                    valid = False
+                if obs == 'F' and len(model_config['emission_probability'][state][obs]) != 1:
+                    logging.warning("{} model config emission probability for state '{}' and observation '{}' does not contain required 1 param (dp)"
+                        .format(model_type_str, state, obs))
+                    valid = False
+                elif (obs in ['$', '+', '-']) and len(model_config['emission_probability'][state][obs]) != 4:
+                    logging.warning("{} model config emission probability for state '{}' and observation '{}' does not contain required 4 params (dp, mu, sigma, lambda)"
+                        .format(model_type_str, state, obs))
+                    valid = False
+                elif obs not in ['$', '+', '-', 'F']:
+                    logging.warning("{} model config observation '{}' in state '{}' does not match one of the recognized observation types (i.e., '+', '-', '$', or 'F')"
+                        .format(model_type_str, obs, state))
+                emit_prob_sum += float(model_config['emission_probability'][state][obs][0])
+            if not float_value_is_close(emit_prob_sum, 1.0):
+                logging.warning("{} model config emission probability sum '{}' does not equal 1.0 for state '{}'"
+                    .format(model_type_str, emit_prob_sum, state))
+                valid = False
+    return valid
+
+def __check_stream_model_config(model_config):
     '''
-    A valid traffic model config mmust contain the required keys for incrementing counters
+    A valid stream model config must contain the required keys for incrementing counters
     for this model, the start probabilities must sum to 1, and the transition probabilities
     for each outgoing state must sum to 1. This function returns True if the given
     model_config is valid, and False otherwise.
     '''
     if model_config == None:
+        logging.warning("Can't validate missing stream model config")
         return False
 
-    traffic_model_valid = True
+    stream_model_valid = True
 
-    for k in ['state_space', 'observation_space', 'emission_probability', 'transition_probability', 'start_probability']:
-        if k not in model_config:
-            logging.warning("Traffic model config does not contain required key '{}'".format(k))
-            traffic_model_valid = False
+    if not __check_model_common_keys(model_config, "Stream"):
+        stream_model_valid = False
 
+    # packet model has its own observation types
+    if 'observation_space' in model_config:
+        obs_space = model_config['observation_space']
+        if '$' not in obs_space or 'F' not in obs_space:
+            logging.warning("Stream model config observation space is missing at least one of '$', and 'F'")
+            stream_model_valid = False
+
+    if not __check_model_common_start(model_config, "Stream"):
+        stream_model_valid = False
+
+    if not __check_model_common_transition(model_config, "Stream"):
+        stream_model_valid = False
+
+    if not __check_model_common_emission(model_config, "Stream"):
+        stream_model_valid = False
+
+    return stream_model_valid
+
+def __check_packet_model_config(model_config):
+    '''
+    A valid packet model config must contain the required keys for incrementing counters
+    for this model, the start probabilities must sum to 1, and the transition probabilities
+    for each outgoing state must sum to 1. This function returns True if the given
+    model_config is valid, and False otherwise.
+    '''
+    if model_config == None:
+        logging.warning("Can't validate missing packet model config")
+        return False
+
+    packet_model_valid = True
+
+    if not __check_model_common_keys(model_config, "Packet"):
+        packet_model_valid = False
+
+    # packet model has its own observation types
     if 'observation_space' in model_config:
         obs_space = model_config['observation_space']
         if '+' not in obs_space or '-' not in obs_space or 'F' not in obs_space:
-            logging.warning("Traffic model config observation space is missing at least one of '+', '-', and 'F'")
-            traffic_model_valid = False
+            logging.warning("Packet model config observation space is missing at least one of '+', '-', and 'F'")
+            packet_model_valid = False
 
-    if 'start_probability' in model_config:
-        start_prob_sum = 0.0
-        for state in model_config['start_probability']:
-            if state not in model_config['state_space']:
-                logging.warning("Traffic model config state space does not contain state '{}' which is used in the start probability array"
-                    .format(state))
-                traffic_model_valid = False
-            start_prob_sum += float(model_config['start_probability'][state])
-        if not float_value_is_close(start_prob_sum, 1.0):
-            logging.warning("Traffic model config start probability sum '{}' does not equal 1.0 for state '{}'"
-                .format(start_prob_sum, state))
-            traffic_model_valid = False
+    if not __check_model_common_start(model_config, "Packet"):
+        packet_model_valid = False
 
-    if 'transition_probability' in model_config:
-        for src_state in model_config['transition_probability']:
-            if src_state not in model_config['state_space']:
-                logging.warning("Traffic model config state space does not contain state '{}' which is used in the transition probability matrix"
-                    .format(src_state))
-                traffic_model_valid = False
-            trans_prob_sum = 0.0
-            for dst_state in model_config['transition_probability'][src_state]:
-                if dst_state not in model_config['state_space']:
-                    logging.warning("Traffic model config state space does not contain state '{}' which is used in the transition probability matrix"
-                        .format(dst_state))
-                    traffic_model_valid = False
-                trans_prob_sum += float(model_config['transition_probability'][src_state][dst_state])
+    if not __check_model_common_transition(model_config, "Packet"):
+        packet_model_valid = False
 
-            if 'End' not in src_state and not float_value_is_close(trans_prob_sum, 1.0):
-                logging.warning("Traffic model config transition probability sum '{}' does not equal 1.0 for src state '{}'"
-                    .format(trans_prob_sum, src_state))
-                traffic_model_valid = False
+    if not __check_model_common_emission(model_config, "Packet"):
+        packet_model_valid = False
 
-    if 'emission_probability' in model_config:
-        for state in model_config['emission_probability']:
-            if state not in model_config['state_space']:
-                logging.warning("Traffic model config state space does not contain state '{}' which is used in the emission probability matrix"
-                    .format(state))
-                traffic_model_valid = False
-            emit_prob_sum = 0.0
-            for obs in model_config['emission_probability'][state]:
-                if obs not in model_config['observation_space']:
-                    logging.warning("Traffic model config observation space does not contain state '{}' which is used in the emission probability matrix"
-                        .format(obs))
-                    traffic_model_valid = False
-                if len(model_config['emission_probability'][state][obs]) != 3:
-                    logging.warning("Traffic model config emission probability for state '{}' and observation '{}' does not contain required 3 params (dp, mu, sigam)"
-                        .format(state, obs))
-                    traffic_model_valid = False
-                else:
-                    emit_prob_sum += float(model_config['emission_probability'][state][obs][0])
-            if not float_value_is_close(emit_prob_sum, 1.0):
-                logging.warning("Traffic model config emission probability sum '{}' does not equal 1.0 for state '{}'"
-                    .format(emit_prob_sum, state))
-                traffic_model_valid = False
+    return packet_model_valid
 
-    return traffic_model_valid
-
-def normalize_traffic_model_config(model_config):
+def __normalize_traffic_model_config_helper(model_config):
     '''
-    Normalizes the given traffic model config so that all start,
-    emission, and transition probabilities sum to 1.0. Returns
-    the normalized config.
+    Normalizes the given packet or stream model config.
     '''
 
     if 'start_probability' in model_config:
@@ -126,9 +213,23 @@ def normalize_traffic_model_config(model_config):
 
     return model_config
 
+def normalize_traffic_model_config(model_config):
+    '''
+    Normalizes the given traffic model config so that all start,
+    emission, and transition probabilities sum to 1.0. Returns
+    the normalized config.
+    '''
+    # we may have only one of stream model or packet model
+    if 'packet_model' in model_config:
+        model_config['packet_model'] = __normalize_traffic_model_config_helper(model_config['packet_model'])
+    if 'stream_model' in model_config:
+        model_config['stream_model'] = __normalize_traffic_model_config_helper(model_config['stream_model'])
+    return model_config
+
 class TrafficModel(object):
     '''
-    A class that represents a hidden markov model (HMM).
+    A class that represents a traffic model, i.e., a combination
+    of packet and stream hidden markov models.
     See `test/traffic.model.json` for a simple traffic model that this class can represent.
     '''
 
@@ -144,115 +245,80 @@ class TrafficModel(object):
         if not check_traffic_model_config(model_config):
             return None
 
-        self.config = model_config
-        self.state_s = self.config['state_space']
-        self.obs_s = self.config['observation_space']
-        self.start_p = self.config['start_probability']
-        self.trans_p = self.config['transition_probability']
-        self.emit_p = self.config['emission_probability']
-        self.packets = {}
-        self.pheap = []
+        self.packet_hmm = None
+        if 'packet_model' in model_config:
+            # the packet model counters are counted on stream end events
+            self.packet_hmm = HiddenMarkovModel(model_config['packet_model'], "ExitStreamTrafficModel")
 
-        # build map of all the possible transitions, they are the only ones we need to compute or track
-        self.incoming = { st:set() for st in self.state_s }
-        for s in self.trans_p:
-            for t in self.trans_p[s]:
-                if self.trans_p[s][t] > 0. : self.incoming[t].add(s)
+        self.stream_hmm = None
+        if 'stream_model' in model_config:
+            # the stream model counters are counted on circuit end events
+            self.stream_hmm = HiddenMarkovModel(model_config['stream_model'], "ExitCircuitTrafficModel")
 
     def register_counters(self):
-        for label in self.get_dynamic_counter_labels():
-            register_dynamic_counter(label, { VITERBI_EVENT })
+        if self.packet_hmm != None:
+            p = self.packet_hmm.get_dynamic_counter_template_label_mapping()
+            for label in p:
+                register_dynamic_counter(label, { VITERBI_PACKETS_EVENT })
 
-    def get_dynamic_counter_template_label_mapping(self):
-        '''
-        Get a dict mapping the dynamic counter labels for this model to the template label
-        that is used to specify noise for this model. Dynamic counter labels are
-        dependent on the model input.
+        if self.stream_hmm != None:
+            s = self.stream_hmm.get_dynamic_counter_template_label_mapping()
+            for label in s:
+                register_dynamic_counter(label, { VITERBI_STREAMS_EVENT })
 
-        We count the following, for all states and packet directions:
-          + the total number of emissions
-          + the sum of log delays between packet transmission events
-          + the sum of squared log delays between packet transmission events (to compute the variance)
-          + the total transitions
-        '''
-        labels = {}
+    def __get_dynamic_counter_template_label_mapping(self):
+        d = {}
+        # we may have only one of stream model or packet model
+        if self.packet_hmm != None:
+            p = self.packet_hmm.get_dynamic_counter_template_label_mapping()
+            for k in p: d[k] = p[k]
+        if self.stream_hmm != None:
+            s = self.stream_hmm.get_dynamic_counter_template_label_mapping()
+            for k in s: d[k] = s[k]
+        return d
 
-        for state in self.emit_p:
-            for direction in self.emit_p[state]:
-                template_label = "ExitStreamTrafficModelEmissionCount_<STATE>_<DIRECTION>"
-                counter_label = "ExitStreamTrafficModelEmissionCount_{}_{}".format(state, direction)
-                labels[counter_label] = template_label
+    def __get_static_counter_template_label_mapping(self):
+        d = {}
+        # we may have only one of stream model or packet model
+        if self.packet_hmm != None:
+            p = self.packet_hmm.get_static_counter_template_label_mapping()
+            for k in p: d[k] = p[k]
+        if self.stream_hmm != None:
+            s = self.packet_hmm.get_static_counter_template_label_mapping()
+            for k in s: d[k] = s[k]
+        return d
 
-                template_label = "ExitStreamTrafficModelLogDelayTime_<STATE>_<DIRECTION>"
-                counter_label = "ExitStreamTrafficModelLogDelayTime_{}_{}".format(state, direction)
-                labels[counter_label] = template_label
-
-                template_label = "ExitStreamTrafficModelSquaredLogDelayTime_<STATE>_<DIRECTION>"
-                counter_label = "ExitStreamTrafficModelSquaredLogDelayTime_{}_{}".format(state, direction)
-                labels[counter_label] = template_label
-
-        for src_state in self.trans_p:
-            for dst_state in self.trans_p[src_state]:
-                if self.trans_p[src_state][dst_state] > 0.0:
-                    template_label = "ExitStreamTrafficModelTransitionCount_<SRCSTATE>_<DSTSTATE>"
-                    counter_label = "ExitStreamTrafficModelTransitionCount_{}_{}".format(src_state, dst_state)
-                    labels[counter_label] = template_label
-
-        for state in self.start_p:
-            if self.start_p[state] > 0.0:
-                template_label = "ExitStreamTrafficModelTransitionCount_START_<STATE>"
-                counter_label = "ExitStreamTrafficModelTransitionCount_START_{}".format(state)
-                labels[counter_label] = template_label
-
-        return labels
-
-    def get_static_counter_template_label_mapping(self):
-        '''
-        Get a dict mapping the static counter labels for this model to the template label
-        that is used to specify noise for this model. Static counter labels are not
-        dependent on the model input.
-        '''
-        static_labels = ['ExitStreamTrafficModelStreamCount',
-                         'ExitStreamTrafficModelEmissionCount',
-                         'ExitStreamTrafficModelTransitionCount',
-                         'ExitStreamTrafficModelLogDelayTime',
-                         'ExitStreamTrafficModelSquaredLogDelayTime']
-        labels = {}
-        for static_label in static_labels:
-            labels[static_label] = static_label
-        return labels
-
-    def get_all_counter_template_label_mapping(self):
+    def __get_all_counter_template_label_mapping(self):
         '''
         Get a dict mapping all static and dynamic counter labels for this model to the
         template label that is used to specify noise for this model.
         '''
-        all_labels = self.get_dynamic_counter_template_label_mapping()
-        static_labels = self.get_static_counter_template_label_mapping()
+        all_labels = self.__get_dynamic_counter_template_label_mapping()
+        static_labels = self.__get_static_counter_template_label_mapping()
         for label in static_labels:
             all_labels[label] = static_labels[label]
         return all_labels
 
-    def get_all_template_labels(self):
+    def __get_all_template_labels(self):
         '''
         Return the set of all template labels that are used to specify noise for this model.
         '''
-        all_labels = self.get_all_counter_template_label_mapping()
+        all_labels = self.__get_all_counter_template_label_mapping()
         return set(all_labels.values())
 
-    def get_dynamic_counter_labels(self):
+    def __get_dynamic_counter_labels(self):
         '''
         Return the set of counters that should be counted for this model,
         but only those whose name depends on the traffic model input.
         '''
-        dynamic_labels = self.get_dynamic_counter_template_label_mapping()
+        dynamic_labels = self.__get_dynamic_counter_template_label_mapping()
         return set(dynamic_labels.keys())
 
     def get_all_counter_labels(self):
         '''
         Return the set of all counters that will be counted for this model.
         '''
-        all_labels = self.get_all_counter_template_label_mapping()
+        all_labels = self.__get_all_counter_template_label_mapping()
         return set(all_labels.keys())
 
     def check_noise_config(self, templated_noise_config):
@@ -265,7 +331,7 @@ class TrafficModel(object):
 
         traffic_noise_valid = True
         for key in templated_noise_config['counters']:
-            if key not in self.get_all_template_labels():
+            if key not in self.__get_all_template_labels():
                 traffic_noise_valid = False
         return traffic_noise_valid
 
@@ -281,7 +347,7 @@ class TrafficModel(object):
 
         noise_dict = {}
 
-        label_map = self.get_all_counter_template_label_mapping()
+        label_map = self.__get_all_counter_template_label_mapping()
         for counter_label in label_map:
             template_label = label_map[counter_label]
             # only count the label if it was in the config
@@ -298,7 +364,7 @@ class TrafficModel(object):
         '''
         bins_dict = {}
 
-        label_map = self.get_all_counter_template_label_mapping()
+        label_map = self.__get_all_counter_template_label_mapping()
         for counter_label in label_map:
             template_label = label_map[counter_label]
             # only count the label if it was in the config
@@ -308,14 +374,139 @@ class TrafficModel(object):
 
         return bins_dict
 
-    @staticmethod
-    def _integer_round(amount, factor):
+    def increment_packets_counters(self, viterbi_result, secure_counters):
         '''
-        Round amount to a multiple of factor, rounding halfway up.
+        Increment the appropriate secure counter labels for this model,
+        based on the viterbi path for packets sent on this stream.
         '''
-        return (((amount + factor/2)/factor)*factor)
+        if self.packet_hmm != None:
+            # the fact that we got an event means that we observed a stream
+            secure_counters.increment('ExitStreamTrafficModelStreamCount',
+                                      bin=SINGLE_BIN,
+                                      inc=1)
+            self.packet_hmm.increment_counters(viterbi_result, secure_counters)
 
-    def increment_traffic_counters(self, viterbi_result, secure_counters):
+    def increment_streams_counters(self, viterbi_result, secure_counters):
+        '''
+        Increment the appropriate secure counter labels for this model,
+        based on the viterbi path for packets sent on this stream.
+        '''
+        if self.stream_hmm != None:
+            # the fact that we got an event means that we observed a stream
+            secure_counters.increment('ExitCircuitTrafficModelCircuitCount',
+                                      bin=SINGLE_BIN,
+                                      inc=1)
+            self.stream_hmm.increment_counters(viterbi_result, secure_counters)
+
+    def update_from_tallies(self, tallies, trans_inertia=0.5, emit_inertia=0.5):
+        '''
+        Given the (noisy) aggregated tallied counter values for
+        this model, compute the updated packet and stream models.
+        '''
+
+        updated_model_config = {}
+
+        if self.packets_hmm != None:
+            updated_model_config['packet_model'] = self.packets_hmm.update_from_tallies(tallies, trans_inertia, emit_inertia)
+
+        if self.stream_hmm != None:
+            updated_model_config['stream_model'] = self.stream_hmm.update_from_tallies(tallies, trans_inertia, emit_inertia)
+
+        return updated_model_config
+
+class HiddenMarkovModel(object):
+    '''
+    A private class that represents a hidden markov model (HMM).
+    '''
+
+    def __init__(self, model_config, counter_prefix_str):
+        '''
+        Initialize the model with a set of states, probabilities for starting in each of those
+        states, probabilities for transitioning between those states, and proababilities of emitting
+        certain types of events in each of those states.
+
+        For us, the states very loosely represent if the node is transmitting or pausing.
+        The events represent if we saw an outbound or inbound packet, or a stream, while in each of those states.
+        '''
+
+        self.state_s = model_config['state_space']
+        self.obs_s = model_config['observation_space']
+        self.start_p = model_config['start_probability']
+        self.trans_p = model_config['transition_probability']
+        self.emit_p = model_config['emission_probability']
+        self.prefix = counter_prefix_str
+
+    def get_dynamic_counter_template_label_mapping(self):
+        '''
+        Get a dict mapping the dynamic counter labels for this model to the template label
+        that is used to specify noise for this model. Dynamic counter labels are
+        dependent on the model input.
+
+        We count the following, for all states and packet directions:
+          + the total number of emissions
+          + the total number of transitions
+          + for packet events ('+' or '-'), and stream events ('$') for dwell state
+            + the sum of log delays between events
+            + the sum of squared log delays between events (to compute the variance)
+          + for stream events ('$') for active state
+            + the sum of delays (along with num emissions to compute new rate)
+        '''
+        labels = {}
+
+        for state in self.emit_p:
+            for obs in self.emit_p[state]:
+                template_label = "{}EmissionCount_<STATE>_<OBS>".format(self.prefix)
+                counter_label = "{}EmissionCount_{}_{}".format(self.prefix, state, obs)
+                labels[counter_label] = template_label
+
+                if obs == '+' or obs == '-' or (obs == '$' and 'Dwell' in state):
+                    # counters to update a lognormal distribution
+                    template_label = "{}LogDelayTime_<STATE>_<OBS>".format(self.prefix)
+                    counter_label = "{}LogDelayTime_{}_{}".format(self.prefix, state, obs)
+                    labels[counter_label] = template_label
+
+                    template_label = "{}SquaredLogDelayTime_<STATE>_<OBS>".format(self.prefix)
+                    counter_label = "{}SquaredLogDelayTime_{}_{}".format(self.prefix, state, obs)
+                    labels[counter_label] = template_label
+                elif obs == '$' and 'Active' in state:
+                    # counters to update an exponential distribution
+                    template_label = "{}DelayTime_<STATE>_<OBS>".format(self.prefix)
+                    counter_label = "{}DelayTime_{}_{}".format(self.prefix, state, obs)
+                    labels[counter_label] = template_label
+
+        for src_state in self.trans_p:
+            for dst_state in self.trans_p[src_state]:
+                if self.trans_p[src_state][dst_state] > 0.0:
+                    template_label = "{}TransitionCount_<SRCSTATE>_<DSTSTATE>".format(self.prefix)
+                    counter_label = "{}TransitionCount_{}_{}".format(self.prefix, src_state, dst_state)
+                    labels[counter_label] = template_label
+
+        for state in self.start_p:
+            if self.start_p[state] > 0.0:
+                template_label = "{}TransitionCount_START_<STATE>".format(self.prefix)
+                counter_label = "{}TransitionCount_START_{}".format(self.prefix, state)
+                labels[counter_label] = template_label
+
+        return labels
+
+    def get_static_counter_template_label_mapping(self):
+        '''
+        Get a dict mapping the static counter labels for this model to the template label
+        that is used to specify noise for this model. Static counter labels are not
+        dependent on the model input.
+        '''
+        static_labels = ['{}StreamCount'.format(self.prefix),
+                         '{}EmissionCount'.format(self.prefix),
+                         '{}TransitionCount'.format(self.prefix),
+                         '{}DelayTime'.format(self.prefix),
+                         '{}LogDelayTime'.format(self.prefix),
+                         '{}SquaredLogDelayTime'.format(self.prefix)]
+        labels = {}
+        for static_label in static_labels:
+            labels[static_label] = static_label
+        return labels
+
+    def increment_counters(self, viterbi_result, secure_counters):
         '''
         Increment the appropriate secure counter labels for this model given the observed
         list of events specifying when bytes were transferred in Tor.
@@ -323,34 +514,16 @@ class TrafficModel(object):
           secure_counters: the SecureCounters object whose counters should get incremented
             as a result of the observed bytes events
 
-        The viterbi_result is encoded as a json string:
+        The viterbi_result is encoded as a json string, e.g.:
           '[["m10s1";"+";35432];["m2s4";"+";0];["m4s2";"-";100];["m4sEnd";"F";0]]'
 
         This is a list of observations, where each observation has a state name,
-        a direction code, and a delay value.
-
-        --old documentation--
-        example observations = [('+', 20), ('+', 10), ('+',50), ('+',1000)]
-        example viterbi result: Blabbing Blabbing Blabbing Thinking
-        then count the following 4:
-          - increment 1 for state/observation match:
-            Blabbing_+, Blabbing_+, Blabbing_+, Thinking_+
-          - increment x where x is log(delay) for each state/observation match:
-            Blabbing_+: 2, Blabbing_+: 2, Blabbing_+: 3, Thinking_+: 6
-          - increment x*x where x is log(delay) for each state/observation match:
-            Blabbing_+: 4, Blabbing_+: 4, Blabbing_+: 9, Thinking_+: 36
-          - increment 1 for each state-to-state transition:
-            Blabbing_Blabbing, Blabbing_Blabbing, Blabbing_Thinking
+        an observation code, and a delay value.
         '''
 
         # python lets you encode with non-default separators, but not decode
         viterbi_result = viterbi_result.replace(';',',')
         path = loads(viterbi_result)
-
-        # the fact that we got an event means that we observed a stream
-        secure_counters.increment('ExitStreamTrafficModelStreamCount',
-                                  bin=SINGLE_BIN,
-                                  inc=1)
 
         # empty lists are possible, when there was in error in the Tor
         # viterbi code, or when a stream ended with no data sent.
@@ -359,39 +532,48 @@ class TrafficModel(object):
             if len(packet) < 3:
                 continue
 
-            state, direction, delay = str(packet[0]), str(packet[1]), int(packet[2])
+            state, obs, delay = str(packet[0]), str(packet[1]), int(packet[2])
 
             # delay of 0 indicates the packets were observed at the same time
             # log(x=0) is undefined, and log(x<1) is negative
             # we don't want to count negatives, so override delay if needed
             ldelay = 0 if delay < 1 else int(round(math.log(delay)))
 
-            secure_counters.increment('ExitStreamTrafficModelEmissionCount',
+            secure_counters.increment('{}EmissionCount'.format(self.prefix),
                                       bin=SINGLE_BIN,
                                       inc=1)
-            label = 'ExitStreamTrafficModelEmissionCount_{}_{}'.format(state, direction)
+            label = '{}EmissionCount_{}_{}'.format(self.prefix, state, obs)
             secure_counters.increment(label,
                                       bin=SINGLE_BIN,
                                       inc=1)
 
-            secure_counters.increment('ExitStreamTrafficModelLogDelayTime',
-                                      bin=SINGLE_BIN,
-                                      inc=ldelay)
-            label = 'ExitStreamTrafficModelLogDelayTime_{}_{}'.format(state, direction)
-            secure_counters.increment(label,
-                                      bin=SINGLE_BIN,
-                                      inc=ldelay)
+            if obs == '+' or obs == '-' or (obs == '$' and 'Dwell' in state):
+                secure_counters.increment('{}LogDelayTime'.format(self.prefix),
+                                          bin=SINGLE_BIN,
+                                          inc=ldelay)
+                label = '{}LogDelayTime_{}_{}'.format(self.prefix, state, obs)
+                secure_counters.increment(label,
+                                          bin=SINGLE_BIN,
+                                          inc=ldelay)
 
-            secure_counters.increment('ExitStreamTrafficModelSquaredLogDelayTime',
-                                      bin=SINGLE_BIN,
-                                      inc=ldelay*ldelay)
-            label = 'ExitStreamTrafficModelSquaredLogDelayTime_{}_{}'.format(state, direction)
-            secure_counters.increment(label,
-                                      bin=SINGLE_BIN,
-                                      inc=ldelay*ldelay)
+                secure_counters.increment('{}SquaredLogDelayTime'.format(self.prefix),
+                                          bin=SINGLE_BIN,
+                                          inc=ldelay*ldelay)
+                label = '{}SquaredLogDelayTime_{}_{}'.format(self.prefix, state, obs)
+                secure_counters.increment(label,
+                                          bin=SINGLE_BIN,
+                                          inc=ldelay*ldelay)
+            elif obs == '$' and 'Active' in state:
+                secure_counters.increment('{}DelayTime'.format(self.prefix),
+                                          bin=SINGLE_BIN,
+                                          inc=delay)
+                label = '{}DelayTime_{}_{}'.format(self.prefix, state, obs)
+                secure_counters.increment(label,
+                                          bin=SINGLE_BIN,
+                                          inc=delay)
 
             if i == 0: # track starting transitions
-                label = 'ExitStreamTrafficModelTransitionCount_START_{}'.format(state)
+                label = '{}TransitionCount_START_{}'.format(self.prefix, state)
                 secure_counters.increment(label,
                                           bin=SINGLE_BIN,
                                           inc=1)
@@ -399,10 +581,10 @@ class TrafficModel(object):
             # track transitions for all but the final state
             if (i + 1) < len(path) and len(path[i + 1]) >= 3:
                 next_state = str(path[i + 1][0])
-                secure_counters.increment('ExitStreamTrafficModelTransitionCount',
+                secure_counters.increment('{}TransitionCount'.format(self.prefix),
                                           bin=SINGLE_BIN,
                                           inc=1)
-                label = 'ExitStreamTrafficModelTransitionCount_{}_{}'.format(state, next_state)
+                label = '{}TransitionCount_{}_{}'.format(self.prefix, state, next_state)
                 secure_counters.increment(label,
                                           bin=SINGLE_BIN,
                                           inc=1)
@@ -419,7 +601,7 @@ class TrafficModel(object):
 
         # first we go through and convert tallies to valid non-negative values
         for state in self.start_p:
-            label = "ExitStreamTrafficModelTransitionCount_START_{}".format(state)
+            label = "{}TransitionCount_START_{}".format(self.prefix, state)
             count = tallies[label] if label in tallies and tallies[label] > 0.0 else 0.0
             s_count[state] = float(count)
 
@@ -456,6 +638,7 @@ class TrafficModel(object):
 
         return self.start_p
 
+
     def __normalize_transition_tallies(self, tallies):
         '''
         Converts the given tally counts to valid probabilities by normalizing the counts.
@@ -470,7 +653,7 @@ class TrafficModel(object):
             # first we go through and convert tallies to valid non-negative values
             t_count[src_state] = {}
             for dst_state in self.trans_p[src_state]:
-                label = "ExitStreamTrafficModelTransitionCount_{}_{}".format(src_state, dst_state)
+                label = "{}TransitionCount_{}_{}".format(self.prefix, src_state, dst_state)
                 count = tallies[label] if label in tallies and tallies[label] > 0.0 else 0.0
                 t_count[src_state][dst_state] = float(count)
 
@@ -520,49 +703,56 @@ class TrafficModel(object):
         1.0 (i.e., 100%), or 0.0 if the we counted no positive start counts.
         '''
 
-        e_count, e_mu, e_sigma = {}, {}, {}
+        e_count, e_mu, e_sigma, e_lambda = {}, {}, {}, {}
         for state in self.emit_p:
             # first we go through and convert tallies to valid non-negative values
-            e_count[state], e_mu[state], e_sigma[state] = {}, {}, {}
-            for direction in self.emit_p[state]:
-                sd_label = "ExitStreamTrafficModelEmissionCount_{}_{}".format(state, direction)
+            e_count[state], e_mu[state], e_sigma[state], e_lambda[state] = {}, {}, {}, {}
+            for obs in self.emit_p[state]:
+                sd_label = "{}EmissionCount_{}_{}".format(self.prefix, state, obs)
                 if sd_label in tallies and tallies[sd_label] > 0.0:
-                    e_count[state][direction] = float(tallies[sd_label])
+                    e_count[state][obs] = float(tallies[sd_label])
                 else:
-                    e_count[state][direction] = 0.0
+                    e_count[state][obs] = 0.0
 
-                mu_label = "ExitStreamTrafficModelLogDelayTime_{}_{}".format(state, direction)
-                if mu_label in tallies and tallies[mu_label] > 0.0 and e_count[state][direction] > 0.0:
-                    e_mu[state][direction] = float(tallies[mu_label])/float(e_count[state][direction])
-                else:
-                    e_mu[state][direction] = 0.0
+                if obs == '+' or obs == '-' or (obs == '$' and 'Dwell' in state):
+                    mu_label = "{}LogDelayTime_{}_{}".format(self.prefix, state, obs)
+                    if mu_label in tallies and tallies[mu_label] > 0.0 and e_count[state][obs] > 0.0:
+                        e_mu[state][obs] = float(tallies[mu_label])/float(e_count[state][obs])
+                    else:
+                        e_mu[state][obs] = 0.0
 
-                ss_label = "ExitStreamTrafficModelSquaredLogDelayTime_{}_{}".format(state, direction)
-                if ss_label in tallies and tallies[ss_label] > 0.0 and sd_label in tallies and tallies[sd_label] > 0.0:
-                    obs_var = float(tallies[ss_label])/float(tallies[sd_label])
-                    obs_var -= e_mu[state][direction]**2
-                else:
-                    obs_var = 0.0
+                    ss_label = "{}SquaredLogDelayTime_{}_{}".format(self.prefix, state, obs)
+                    if ss_label in tallies and tallies[ss_label] > 0.0 and sd_label in tallies and tallies[sd_label] > 0.0:
+                        obs_var = float(tallies[ss_label])/float(tallies[sd_label])
+                        obs_var -= e_mu[state][obs]**2
+                    else:
+                        obs_var = 0.0
 
-                # rounding errors or noise can make a small positive variance look negative
-                # setting a small "sane default" for this case
-                if obs_var < math.sqrt(0.01):
-                    e_sigma[state][direction] = 0.01
-                else: # No rounding errors, do the math
-                    e_sigma[state][direction] = math.sqrt(obs_var)
+                    # rounding errors or noise can make a small positive variance look negative
+                    # setting a small "sane default" for this case
+                    if obs_var < math.sqrt(0.01):
+                        e_sigma[state][obs] = 0.01
+                    else: # No rounding errors, do the math
+                        e_sigma[state][obs] = math.sqrt(obs_var)
+                elif obs == '$' and 'Active' in state:
+                    lam_label = "{}DelayTime_{}_{}".format(self.prefix, state, obs)
+                    if lam_label in tallies and tallies[lam_label] > 0.0 and e_count[state][obs] > 0.0:
+                        e_lambda[state][obs] = float(tallies[lam_label])/float(e_count[state][obs])
+                    else:
+                        e_lambda[state][obs] = 0.0
 
             # normalize counts to ensure the probabilities sum to 100%,
             # or set to 0 if we had absolutely no positive counts.
             e_total = float(sum(e_count[state].values()))
-            for direction in e_count[state]:
+            for obs in e_count[state]:
                 if e_total > 0.0:
-                    e_count[state][direction] = e_count[state][direction]/e_total
+                    e_count[state][obs] = e_count[state][obs]/e_total
                 else:
-                    e_count[state][direction] = 0.0
+                    e_count[state][obs] = 0.0
 
-        return e_count, e_mu, e_sigma
+        return e_count, e_mu, e_sigma, e_lambda
 
-    def __update_emission_probabilities(self, e_count, e_mu, e_sigma, inertia):
+    def __update_emission_probabilities(self, e_count, e_mu, e_sigma, e_lambda, inertia):
         '''
         Update the emission probabilities based on the normalized probabilities from the
         tally count results.
@@ -571,31 +761,43 @@ class TrafficModel(object):
 
         for state in self.emit_p:
             # apply inertia
-            for direction in self.emit_p[state]:
-                (dp, mu, sigma) = self.emit_p[state][direction]
+            for obs in self.emit_p[state]:
+                if obs == '+' or obs == '-' or (obs == '$' and 'Dwell' in state):
+                    (dp, mu, sigma, lam) = self.emit_p[state][obs]
 
-                dp_new = inertia * dp + (1.0-inertia) * e_count[state][direction]
-                mu_new = inertia * mu + (1.0-inertia) * e_mu[state][direction]
-                sigma_new = inertia * sigma + (1.0-inertia) * e_sigma[state][direction]
+                    dp_new = inertia * dp + (1.0-inertia) * e_count[state][obs]
+                    mu_new = inertia * mu + (1.0-inertia) * e_mu[state][obs]
+                    sigma_new = inertia * sigma + (1.0-inertia) * e_sigma[state][obs]
 
-                self.emit_p[state][direction] = (dp_new, mu_new, sigma_new)
+                    self.emit_p[state][obs] = (dp_new, mu_new, sigma_new, 0.0)
+                elif obs == '$' and 'Active' in state:
+                    (dp, mu, sigma, lam) = self.emit_p[state][obs]
+
+                    dp_new = inertia * dp + (1.0-inertia) * e_count[state][obs]
+                    lam_new = inertia * lam + (1.0-inertia) * e_lambda[state][obs]
+
+                    self.emit_p[state][obs] = (dp_new, 0.0, 0.0, lam_new)
 
             # be extra sure our new probs sum to 1.0
             e_total = float(sum([v[0] for v in self.emit_p[state].values()]))
             if e_total > 0.0:
-                for direction in self.emit_p[state]:
-                    (dp, mu, sigma) = self.emit_p[state][direction]
-                    dp_new = dp/e_total
-                    self.emit_p[state][direction] = (dp_new, mu, sigma)
+                for obs in self.emit_p[state]:
+                    if obs == '+' or obs == '-' or (obs == '$' and 'Dwell' in state):
+                        (dp, mu, sigma, lam) = self.emit_p[state][obs]
+                        dp_new = dp/e_total
+                        self.emit_p[state][obs] = (dp_new, mu, sigma, 0.0)
+                    elif obs == '$' and 'Active' in state:
+                        (dp, mu, sigma, lam) = self.emit_p[state][obs]
+                        dp_new = dp/e_total
+                        self.emit_p[state][obs] = (dp_new, 0.0, 0.0, lam)
             else:
                 logging.warning("BUG: we have no positive emission probabilities in updated model for state {}."
                     .format(state))
 
         return self.emit_p
 
-    def update_from_tallies(self, tallies, trans_inertia=0.5, emit_inertia=0.5):
+    def update_from_tallies(self, tallies, trans_inertia, emit_inertia):
         '''
-        Given the (noisy) aggregated tallied counter values for this model, compute the updated model:
         + Transition probabilities - trans_p[s][t] = inertia*trans_p[s][t] + (1-inertia)*(tally result)
         + Emission probabilities - emit_p[s][d] <- dp', mu', sigma' where
           dp' <- emit_inertia * dp + (1-emit_inertia)*(state_direction count / state count)
@@ -612,8 +814,8 @@ class TrafficModel(object):
         self.trans_p = self.__update_transition_probabilities(t_tally_prob, trans_inertia)
 
         # handle emission probabilities
-        e_count, e_mu, e_sigma = self.__normalize_emission_tallies(tallies)
-        self.emit_p = self.__update_emission_probabilities(e_count, e_mu, e_sigma, emit_inertia)
+        e_count, e_mu, e_sigma, e_lambda = self.__normalize_emission_tallies(tallies)
+        self.emit_p = self.__update_emission_probabilities(e_count, e_mu, e_sigma, e_lambda, emit_inertia)
 
         updated_model_config = {
             'state_space': self.state_s,

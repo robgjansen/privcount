@@ -252,7 +252,8 @@ CIRCUIT_EVENT = 'PRIVCOUNT_CIRCUIT_CLOSE'
 CONNECTION_EVENT = 'PRIVCOUNT_CONNECTION_CLOSE'
 HSDIR_STORE_EVENT = 'PRIVCOUNT_HSDIR_CACHE_STORE'
 HSDIR_FETCH_EVENT = 'PRIVCOUNT_HSDIR_CACHE_FETCH'
-VITERBI_EVENT = 'PRIVCOUNT_VITERBI'
+VITERBI_PACKETS_EVENT = 'PRIVCOUNT_VITERBI_PACKETS'
+VITERBI_STREAMS_EVENT = 'PRIVCOUNT_VITERBI_STREAMS'
 
 # Unused events
 # PrivCount never used this event, it was used by PrivEx
@@ -273,7 +274,8 @@ def get_valid_events():
                   CONNECTION_EVENT,
                   HSDIR_STORE_EVENT,
                   HSDIR_FETCH_EVENT,
-                  VITERBI_EVENT,
+                  VITERBI_PACKETS_EVENT,
+                  VITERBI_STREAMS_EVENT,
                   # Unused events
                   DNS_EVENT,
                   LEGACY_CIRCUIT_EVENT,
@@ -291,11 +293,20 @@ PRIVCOUNT_COUNTER_EVENTS = {
 
 # these counters are for the traffic model code
 # model-specific counters are added in register_dynamic_counter
-'ExitStreamTrafficModelStreamCount' : { VITERBI_EVENT },
-'ExitStreamTrafficModelEmissionCount' : { VITERBI_EVENT },
-'ExitStreamTrafficModelTransitionCount' : { VITERBI_EVENT },
-'ExitStreamTrafficModelLogDelayTime' : { VITERBI_EVENT },
-'ExitStreamTrafficModelSquaredLogDelayTime' : { VITERBI_EVENT },
+# viterbi paths for packet modeling are counted on stream end events
+'ExitStreamTrafficModelStreamCount' : { VITERBI_PACKETS_EVENT },
+'ExitStreamTrafficModelEmissionCount' : { VITERBI_PACKETS_EVENT },
+'ExitStreamTrafficModelTransitionCount' : { VITERBI_PACKETS_EVENT },
+'ExitStreamTrafficModelDelayTime' : { VITERBI_PACKETS_EVENT },
+'ExitStreamTrafficModelLogDelayTime' : { VITERBI_PACKETS_EVENT },
+'ExitStreamTrafficModelSquaredLogDelayTime' : { VITERBI_PACKETS_EVENT },
+# viterbi paths for stream modeling are counted on circuit end events
+'ExitCircuitTrafficModelCircuitCount' : { VITERBI_STREAMS_EVENT },
+'ExitCircuitTrafficModelEmissionCount' : { VITERBI_STREAMS_EVENT },
+'ExitCircuitTrafficModelTransitionCount' : { VITERBI_STREAMS_EVENT },
+'ExitCircuitTrafficModelDelayTime' : { VITERBI_STREAMS_EVENT },
+'ExitCircuitTrafficModelLogDelayTime' : { VITERBI_STREAMS_EVENT },
+'ExitCircuitTrafficModelSquaredLogDelayTime' : { VITERBI_STREAMS_EVENT },
 
 'ExitStreamCount' : { STREAM_EVENT },
 'ExitStreamByteCount' : { STREAM_EVENT },

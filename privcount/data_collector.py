@@ -1163,8 +1163,10 @@ class Aggregator(ReconnectingClientFactory):
             return self._handle_hsdir_store_event(fields)
         elif event_code == 'PRIVCOUNT_HSDIR_CACHE_FETCH':
             return self._handle_hsdir_fetch_event(fields)
-        elif event_code == 'PRIVCOUNT_VITERBI':
-            return self._handle_viterbi_event(fields)
+        elif event_code == 'PRIVCOUNT_VITERBI_PACKETS':
+            return self._handle_viterbi_packets_event(fields)
+        elif event_code == 'PRIVCOUNT_VITERBI_STREAMS':
+            return self._handle_viterbi_streams_event(fields)
         else:
             logging.warning("Unexpected {} event when handling: '{}'"
                             .format(event_code, " ".join(items)))
@@ -2156,15 +2158,15 @@ class Aggregator(ReconnectingClientFactory):
         # if everything passed, we're ok
         return True
 
-    def _handle_viterbi_event(self, fields):
-        event_desc = "in PRIVCOUNT_VITERBI event"
+    def _handle_viterbi_packets_event(self, fields):
+        event_desc = "in PRIVCOUNT_VITERBI_PACKETS event"
 
         # we must have a traffic model to process the event
         if self.traffic_model is None:
             return False
 
         # the string should not be empty
-        if not is_string_valid("ViterbiPath",
+        if not is_string_valid("ViterbiPathPackets",
                                fields, event_desc,
                                is_mandatory=True,
                                min_len=1):
@@ -2178,12 +2180,44 @@ class Aggregator(ReconnectingClientFactory):
             return False
 
         # get the result string
-        viterbi_result = get_string_value("ViterbiPath",
+        viterbi_result = get_string_value("ViterbiPathPackets",
                                  fields, event_desc,
                                  is_mandatory=True)
 
         # let the traffic model decode the viterbi result
-        self.traffic_model.increment_traffic_counters(viterbi_result, self.secure_counters)
+        self.traffic_model.increment_packets_counters(viterbi_result, self.secure_counters)
+
+        # everything is OK
+        return True
+
+    def _handle_viterbi_packets_event(self, fields):
+        event_desc = "in PRIVCOUNT_VITERBI_STREAMS event"
+
+        # we must have a traffic model to process the event
+        if self.traffic_model is None:
+            return False
+
+        # the string should not be empty
+        if not is_string_valid("ViterbiPathStreams",
+                               fields, event_desc,
+                               is_mandatory=True,
+                               min_len=1):
+            return False
+
+        # we currently don't use the timestamp, but require it anyway
+        if not is_float_valid("EventTimestamp",
+                              fields, event_desc,
+                              is_mandatory=True,
+                              min_value=0.0):
+            return False
+
+        # get the result string
+        viterbi_result = get_string_value("ViterbiPathStreams",
+                                 fields, event_desc,
+                                 is_mandatory=True)
+
+        # let the traffic model decode the viterbi result
+        self.traffic_model.increment_streams_counters(viterbi_result, self.secure_counters)
 
         # everything is OK
         return True
