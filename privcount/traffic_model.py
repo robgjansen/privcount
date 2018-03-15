@@ -408,8 +408,8 @@ class TrafficModel(object):
 
         updated_model_config = {}
 
-        if self.packets_hmm != None:
-            updated_model_config['packet_model'] = self.packets_hmm.update_from_tallies(tallies, trans_inertia, emit_inertia)
+        if self.packet_hmm != None:
+            updated_model_config['packet_model'] = self.packet_hmm.update_from_tallies(tallies, trans_inertia, emit_inertia)
 
         if self.stream_hmm != None:
             updated_model_config['stream_model'] = self.stream_hmm.update_from_tallies(tallies, trans_inertia, emit_inertia)
