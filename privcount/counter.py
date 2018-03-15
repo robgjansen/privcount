@@ -6418,8 +6418,8 @@ def check_bin_count_matches_name(bins):
         bin_count = len(bins[key]['bins'])
         # handle template counters by stripping the non-template part
         key_template, _, _ = key.partition("_")
-        # the TrafficModel LogDelayTime counters are single bin
-        if key_template.endswith("Count") or key_template.endswith("LogDelayTime"):
+        # the TrafficModel DelayTime counters are single bin
+        if key_template.endswith("Count") or key_template.endswith("DelayTime"):
             if bin_count != 1:
                 logging.warning("counter {} ends in Count, but has {} bins: {}"
                                 .format(key, bin_count, bins[key]))

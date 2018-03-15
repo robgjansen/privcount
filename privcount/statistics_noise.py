@@ -2,7 +2,6 @@
 
 import logging
 import math
-import scipy.stats
 import yaml
 
 from privcount.counter import DEFAULT_SIGMA_TOLERANCE, DEFAULT_EPSILON_TOLERANCE, DEFAULT_SIGMA_RATIO_TOLERANCE, DEFAULT_DUMMY_COUNTER_NAME, is_circuit_sample_counter
@@ -15,7 +14,7 @@ def satisfies_dp(sensitivity, epsilon, delta, std):
     # find lowest value at which epsilon differential-privacy is satisfied
     lower_x = -(float(epsilon) * (std**2.0) / sensitivity) + sensitivity/2.0
     # determine lower tail probability of normal distribution w/ mean of zero
-    lower_tail_prob = scipy.stats.norm.cdf(lower_x, 0, std)
+    lower_tail_prob = lower_tail_prob = (1.0 + math.erf(lower_x / std / math.sqrt(2.0))) / 2.0
     # explicitly return Boolean value to avoid returning numpy type
     if (lower_tail_prob <= delta):
         return True

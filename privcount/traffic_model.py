@@ -333,7 +333,7 @@ class TrafficModel(object):
         traffic_noise_valid = True
         for key in templated_noise_config['counters']:
             if key not in self.__get_all_template_labels():
-                logging.warning("Could not find key '{}' in set of acceptable labels.")
+                logging.warning("Could not find key '{}' in set of acceptable labels.".format(key))
                 traffic_noise_valid = False
         return traffic_noise_valid
 

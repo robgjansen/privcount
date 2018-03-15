@@ -22,7 +22,6 @@ pyOpenSSL>=0.15.1
 pyasn1>=0.1.9
 pyasn1-modules>=0.0.8
 pycparser>=2.14
-scipy>=0.13.0
 service-identity>=16.0.0
 six>=1.10.0
 wsgiref>=0.1.2
