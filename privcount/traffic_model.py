@@ -327,11 +327,13 @@ class TrafficModel(object):
         for specifying noise for this model, False otherwise.
         '''
         if 'counters' not in templated_noise_config:
+            logging.warning("'counters' not in noise config. Please check config file.")
             return False
 
         traffic_noise_valid = True
         for key in templated_noise_config['counters']:
             if key not in self.__get_all_template_labels():
+                logging.warning("Could not find key '{}' in set of acceptable labels.")
                 traffic_noise_valid = False
         return traffic_noise_valid
 
