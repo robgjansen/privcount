@@ -284,7 +284,7 @@ class TrafficModel(object):
             p = self.packet_hmm.get_static_counter_template_label_mapping()
             for k in p: d[k] = p[k]
         if self.stream_hmm != None:
-            s = self.packet_hmm.get_static_counter_template_label_mapping()
+            s = self.stream_hmm.get_static_counter_template_label_mapping()
             for k in s: d[k] = s[k]
         return d
 
