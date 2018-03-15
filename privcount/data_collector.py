@@ -2191,7 +2191,7 @@ class Aggregator(ReconnectingClientFactory):
         # everything is OK
         return True
 
-    def _handle_viterbi_packets_event(self, fields):
+    def _handle_viterbi_streams_event(self, fields):
         event_desc = "in PRIVCOUNT_VITERBI_STREAMS event"
 
         # we must have a traffic model to process the event
