@@ -753,7 +753,9 @@ class HiddenMarkovModel(object):
                 elif obs == '$' and 'Active' in state:
                     lam_label = "{}DelayTime_{}_{}".format(self.prefix, state, obs)
                     if lam_label in tallies and tallies[lam_label] > 0.0 and e_count[state][obs] > 0.0:
-                        e_lambda[state][obs] = float(tallies[lam_label])/float(e_count[state][obs])
+                        # the rate is streams per microsecond
+                        # e_count is the total emissions (streams), tallies is the total delay (microsecs)
+                        e_lambda[state][obs] = float(e_count[state][obs])/float(tallies[lam_label])
                     else:
                         e_lambda[state][obs] = 0.0
 
