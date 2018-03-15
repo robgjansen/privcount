@@ -28,12 +28,12 @@ def check_traffic_model_config(model_config):
         logging.warning("Traffic model config does not contain key 'packet_model' or 'stream_model'")
         traffic_model_valid = False
 
-    if 'packet_model' not in model_config:
+    if 'packet_model' in model_config:
         packet_model = model_config['packet_model']
         if not __check_packet_model_config(packet_model):
             traffic_model_valid = False
 
-    if 'stream_model' not in model_config:
+    if 'stream_model' in model_config:
         stream_model = model_config['stream_model']
         if not __check_stream_model_config(stream_model):
             traffic_model_valid = False
