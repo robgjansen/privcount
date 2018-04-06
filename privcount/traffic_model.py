@@ -792,7 +792,9 @@ class HiddenMarkovModel(object):
                     (dp, mu, sigma, lam) = self.emit_p[state][obs]
 
                     dp_new = inertia * dp + (1.0-inertia) * e_count[state][obs]
-                    lam_new = inertia * lam + (1.0-inertia) * e_lambda[state][obs]
+                    # normalize to microseconds per stream before applying inertia, and then
+                    # back to streams per microscond for lambda
+                    lam_new = 1.0 / ((inertia * (1.0/lam)) + ((1.0-inertia) * (1.0/e_lambda[state][obs])))
 
                     self.emit_p[state][obs] = (dp_new, 0.0, 0.0, lam_new)
 
